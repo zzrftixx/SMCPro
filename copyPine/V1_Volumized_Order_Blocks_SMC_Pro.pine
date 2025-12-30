@@ -1,0 +1,157 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © fluxchart & Enhanced by Antigravity (UI Remastered)
+
+//@version=5
+strategy("Volumized Order Blocks SMC Pro [Premium UI]", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 5000, margin_long = 0, margin_short = 0, initial_capital = 1000, default_qty_type = strategy.percent_of_equity, default_qty_value = 10, currency = currency.USD)
+
+// -----------------------------------------------------------------------------
+// 1. SETTINGS & CONFIGURATION
+// -----------------------------------------------------------------------------
+grp_filt = "🔥 SNIPER ACCURACY FILTERS"
+use_fvg    = input.bool(false, "Require FVG (Imbalance)", group = grp_filt, tooltip = "High Precision: Only triggers if price leaves a gap (FVG).")
+use_rsi    = input.bool(true, "Smart Impulse (RSI)", group = grp_filt, tooltip = "Filters out trades against momentum.")
+rsi_len    = input.int(14, "RSI Length", group = grp_filt)
+vol_mult   = input.float(1.2, "Volume Power", group = grp_filt, tooltip = "Requires breakout volume to be X times average.")
+
+grp_ui     = "🎨 PREMIUM DASHBOARD"
+show_dash  = input.bool(true, "Show Info Panel", group = grp_ui)
+dash_size  = input.string("Normal", "Dashboard Size", options = ["Tiny", "Small", "Normal", "Large"], group = grp_ui)
+pos_dash   = input.string("Top Right", "Position", options = ["Top Right", "Bottom Right", "Bottom Left"], group = grp_ui)
+
+grp_strat  = "⚙️ STRATEGY SETTINGS"
+rr_ratio   = input.float(2.0, "Risk : Reward", group = grp_strat)
+
+// Colors
+c_bull_main = #089981 // Green for Bullish
+c_bear_main = #f23646 // Red for Bearish
+c_bull_bg   = color.new(c_bull_main, 85)
+c_bear_bg   = color.new(c_bear_main, 85)
+c_text      = color.white
+c_gray      = color.new(color.gray, 40)
+
+// -----------------------------------------------------------------------------
+// 2. LOGIC ENGINE (SMC + CONFLUENCE)
+// -----------------------------------------------------------------------------
+
+// -- Swing Detection --
+obs_lookback = 5
+sw_high = ta.pivothigh(high, obs_lookback, obs_lookback)
+sw_low  = ta.pivotlow(low, obs_lookback, obs_lookback)
+
+// -- Trend Detection (EMA Cloud) --
+// Simple trend filter for the dashboard
+ema_fast = ta.ema(close, 20)
+ema_slow = ta.ema(close, 50)
+trend_bull = ema_fast > ema_slow
+trend_bear = ema_fast < ema_slow
+
+// -- Confluence Checks --
+rsi_val = ta.rsi(close, rsi_len)
+avg_vol = ta.sma(volume, 20)
+is_vol_spike = volume > (avg_vol * vol_mult)
+
+is_bull_fvg = low > high[2] // Gap Up
+is_bear_fvg = high < low[2] // Gap Down
+
+// -- Core Order Block Detection --
+// Bullish: Bearish Candle -> Strong Bullish Candle
+bull_ob_setup = close[1] < open[1] // prev red
+bull_ob_trigger = close > open and close > high[1] // curr green engulfing
+bull_confluence = (not use_rsi or rsi_val > 45) and (not use_fvg or is_bull_fvg)
+is_bull_valid = bull_ob_setup and bull_ob_trigger and bull_confluence
+
+// Bearish: Bullish Candle -> Strong Bearish Candle
+bear_ob_setup = close[1] > open[1] // prev green
+bear_ob_trigger = close < open and close < low[1] // curr red engulfing
+bear_confluence = (not use_rsi or rsi_val < 55) and (not use_fvg or is_bear_fvg)
+is_bear_valid = bear_ob_setup and bear_ob_trigger and bear_confluence
+
+// -----------------------------------------------------------------------------
+// 3. VISUALIZATION (BOXES & LABELS)
+// -----------------------------------------------------------------------------
+var box[] bull_boxes = array.new<box>(0)
+var box[] bear_boxes = array.new<box>(0)
+
+clean_boxes(arr) =>
+    if array.size(arr) > 50
+        box.delete(array.shift(arr))
+
+if is_bull_valid
+    // Create Visual Box
+    top = high[1]
+    bot = low[1]
+    b = box.new(bar_index - 1, top, bar_index + 100, bot, border_color = c_bull_main, bgcolor = c_bull_bg, text = "BUY ZONE", text_color = color.new(c_bull_main, 0), text_size = size.small)
+    array.push(bull_boxes, b)
+    clean_boxes(bull_boxes)
+    
+    // Strategy Entry
+    strategy.entry("SNIPER BUY", strategy.long, comment = "Sniper Buy")
+    sl = bot
+    tp = close + (close - sl) * rr_ratio
+    strategy.exit("TP/SL", "SNIPER BUY", stop = sl, limit = tp)
+
+if is_bear_valid
+    // Create Visual Box
+    top = high[1]
+    bot = low[1]
+    b = box.new(bar_index - 1, top, bar_index + 100, bot, border_color = c_bear_main, bgcolor = c_bear_bg, text = "SELL ZONE", text_color = color.new(c_bear_main, 0), text_size = size.small)
+    array.push(bear_boxes, b)
+    clean_boxes(bear_boxes)
+
+    // Strategy Entry
+    strategy.entry("SNIPER SELL", strategy.short, comment = "Sniper Sell")
+    sl = top
+    tp = close - (sl - close) * rr_ratio
+    strategy.exit("TP/SL", "SNIPER SELL", stop = sl, limit = tp)
+
+// Mitigation (Gray out old boxes)
+if array.size(bull_boxes) > 0
+    for i = array.size(bull_boxes) - 1 to 0
+        bx = array.get(bull_boxes, i)
+        if close < box.get_bottom(bx) // Broken
+            box.set_bgcolor(bx, color.new(color.gray, 95))
+            box.set_border_color(bx, color.new(color.gray, 80))
+            box.set_text(bx, "") // Hide text
+            array.remove(bull_boxes, i)
+
+if array.size(bear_boxes) > 0
+    for i = array.size(bear_boxes) - 1 to 0
+        bx = array.get(bear_boxes, i)
+        if close > box.get_top(bx) // Broken
+            box.set_bgcolor(bx, color.new(color.gray, 95))
+            box.set_border_color(bx, color.new(color.gray, 80))
+            box.set_text(bx, "")
+            array.remove(bear_boxes, i)
+
+// -----------------------------------------------------------------------------
+// 4. MODERN DASHBOARD UI
+// -----------------------------------------------------------------------------
+var table pnl = table.new(pos_dash == "Top Right" ? position.top_right : pos_dash == "Bottom Right" ? position.bottom_right : position.bottom_left, 1, 3, bgcolor = #1e222d, border_width = 0, frame_width = 1, frame_color = c_gray)
+
+if show_dash and barstate.islast
+    // Header
+    table.cell(pnl, 0, 0, "🔥 MARKET STATUS", text_color = color.gray, text_size = size.small)
+    
+    // Trend Status
+    trend_txt = trend_bull ? "BULLISH 🚀" : "BEARISH 🩸"
+    trend_col = trend_bull ? c_bull_main : c_bear_main
+    table.cell(pnl, 0, 1, trend_txt, text_color = trend_col, text_size = size.large, bgcolor = color.new(trend_col, 90))
+
+    // Real-Time Action
+    action_txt = "WAITING..."
+    action_col = color.gray
+    if is_bull_valid
+        action_txt := "ENTRY LONG 🟢"
+        action_col := c_bull_main
+    else if is_bear_valid
+        action_txt := "ENTRY SHORT 🔴"
+        action_col := c_bear_main
+    else if strategy.position_size > 0
+        action_txt := "HOLDING BUY"
+        action_col := c_bull_main
+    else if strategy.position_size < 0
+        action_txt := "HOLDING SELL"
+        action_col := c_bear_main
+
+    table.cell(pnl, 0, 2, action_txt, text_color = color.white, bgcolor = action_col, text_size = size.normal)
+

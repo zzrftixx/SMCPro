@@ -1,246 +1,291 @@
 // This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
-// © fluxchart & Enhanced by Antigravity (NEXUS AI - BLOOMBERG EDITION)
+// © Combined & Enhanced by Antigravity (QUANTUM NOVA: PLATINUM V2)
 
 //@version=5
-strategy("NEXUS AI: Bloomberg Terminal [Ultimate]", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 5000, initial_capital = 10000, default_qty_type = strategy.percent_of_equity, default_qty_value = 10, currency = currency.USD)
+strategy("QUANTUM NOVA: Bloomberg Terminal [Platinum+]", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 5000, initial_capital = 10000, default_qty_type = strategy.percent_of_equity, default_qty_value = 10, currency = currency.USD)
 
 // =============================================================================
-// 1. CONFIGURATION (CONTROL PANEL)
+// 1. MASTER CONFIGURATION
 // =============================================================================
-grp_eng = "⚙️ ENGINE CONFIGURATION"
-use_trend   = input.bool(true, "Trend Engine (MA + Cloud)", group = grp_eng)
-use_mom     = input.bool(true, "Momentum Engine (RSI + BB)", group = grp_eng)
-use_vol     = input.bool(true, "Volatility Engine (UT Bot + ATR)", group = grp_eng)
-use_smc     = input.bool(true, "Smart Money Engine (OB + FVG)", group = grp_eng)
+grp_gen = "⚙️ GENERAL SETTINGS"
+show_dash   = input.bool(true, "Tampilkan Dashboard Bloomberg", group = grp_gen)
+dash_pos    = input.string("Top Right", "Posisi Dashboard", options = ["Top Right", "Bottom Right", "Bottom Left", "Top Left", "Middle Right"], group = grp_gen)
+use_indo    = input.bool(true, "Bahasa Indonesia", group = grp_gen)
 
-grp_vis = "🖥️ TERMINAL DISPLAY"
-show_dash   = input.bool(true, "Show Bloomberg Dashboard", group = grp_vis)
-dash_pos    = input.string("Bottom Right", "Position", options = ["Top Right", "Bottom Right", "Bottom Left"], group = grp_vis)
-show_lines  = input.bool(true, "Show Projection Lines", group = grp_vis)
+grp_vis = "🎨 VISUAL CUSTOMIZATION"
+show_signals= input.bool(true, "Tampilkan Label Sinyal (Custom)", group = grp_vis)
+col_buy     = input.color(#00FF00, "Warna Sinyal BUY", group = grp_vis)
+col_sell    = input.color(#FF0000, "Warna Sinyal SELL", group = grp_vis)
+sz_input    = input.string("Small", "Ukuran Label Sinyal", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = grp_vis)
+show_tpsl   = input.bool(true, "Gambar Garis TP/SL (Enhanced)", group = grp_vis)
+
+grp_strat = "🧠 STRATEGY & INDICATORS"
+rsi_len     = input.int(14, "RSI Length", group = grp_strat)
+rsi_src     = input.source(close, "RSI Source", group = grp_strat)
+use_smc     = input.bool(true, "Smart Money (OB + FVG)", group = grp_strat)
+use_utbot   = input.bool(true, "Volatility Bot (UT Bot)", group = grp_strat)
+use_super   = input.bool(true, "Supertrend (Trend)", group = grp_strat)
+
+grp_risk = "💰 RISK MANAGEMENT"
+tp_mult     = input.float(3.0, "Reward Ratio (TP)", group = grp_risk)
+sl_mult     = input.float(1.0, "Risk Ratio (SL)", group = grp_risk)
+
+// Colors & Constants
+c_text = #FFFFFF 
+c_bg   = #000000 
+c_bull_std = #00FF00
+c_bear_std = #FF0000
+c_neut = #808080
 
 // =============================================================================
-// 2. THE ANALYTIC ENGINES (THE BRAIN)
+// 2. CORE LOGIC INTEGRATION
 // =============================================================================
 
-// --- A. TREND ENGINE (Identifying the 'River') ---
-// Uses EMA 200 for long term, EMA 50 for mid term, and Parabolic SAR for short term.
-ema_200 = ta.ema(close, 200)
-ema_50  = ta.ema(close, 50)
-sar     = ta.sar(0.02, 0.02, 0.2)
+// --- A. UT BOT ALERTS ---
+ut_key = input.int(1, "UT Bot Key Value", group = grp_strat)
+ut_period = input.int(10, "UT Bot Period", group = grp_strat)
+ut_atr = ta.atr(ut_period)
+ut_nLoss = ut_key * ut_atr
+ut_src = close
 
-trend_score = 0
-if close > ema_200 
-    trend_score += 1
-if close > ema_50 
-    trend_score += 1
-if close > sar 
-    trend_score += 1
-
-is_bull_trend = trend_score >= 2
-is_bear_trend = trend_score <= 1 // Inverted for sells
-
-// --- B. MOMENTUM ENGINE (Identifying the 'Speed') ---
-// Uses RSI and Bollinger Bands Squeeze
-rsi = ta.rsi(close, 14)
-[bb_mid, bb_upper, bb_lower] = ta.bb(close, 20, 2)
-
-mom_score = 0
-if rsi > 50 
-    mom_score += 1
-if close > bb_mid 
-    mom_score += 1
-
-is_bull_mom = mom_score >= 2
-is_bear_mom = mom_score <= 0
-
-// --- C. VOLATILITY ENGINE (Identifying the 'Breakout') ---
-// Uses UT Bot Logic (ATR Trailing)
-a = input.int(1, "UT Key Value", group = grp_eng)
-c = input.int(10, "UT ATR Period", group = grp_eng)
-xATR = ta.atr(c)
-nLoss = a * xATR
-src = close
-
-xATRTrailingStop = 0.0
-xATRTrailingStop := if src > nz(xATRTrailingStop[1], 0) and src[1] > nz(xATRTrailingStop[1], 0)
-    math.max(nz(xATRTrailingStop[1]), src - nLoss)
-else if src < nz(xATRTrailingStop[1], 0) and src[1] < nz(xATRTrailingStop[1], 0)
-    math.min(nz(xATRTrailingStop[1]), src + nLoss)
+var float ut_stop = 0.0
+ut_stop := if ut_src > nz(ut_stop[1], 0) and ut_src[1] > nz(ut_stop[1], 0)
+    math.max(nz(ut_stop[1]), ut_src - ut_nLoss)
+else if ut_src < nz(ut_stop[1], 0) and ut_src[1] < nz(ut_stop[1], 0)
+    math.min(nz(ut_stop[1]), ut_src + ut_nLoss)
 else 
-    if src > nz(xATRTrailingStop[1], 0) 
-        src - nLoss 
+    if ut_src > nz(ut_stop[1], 0) 
+        ut_src - ut_nLoss 
     else 
-        src + nLoss
+        ut_src + ut_nLoss
 
-pos = 0   
-pos := if src[1] < nz(xATRTrailingStop[1], 0) and src > nz(xATRTrailingStop[1], 0)
+ut_pos = 0   
+ut_pos := if ut_src[1] < nz(ut_stop[1], 0) and ut_src > nz(ut_stop[1], 0)
     1
-else if src[1] > nz(xATRTrailingStop[1], 0) and src < nz(xATRTrailingStop[1], 0)
+else if ut_src[1] > nz(ut_stop[1], 0) and ut_src < nz(ut_stop[1], 0)
     -1
 else 
-    nz(pos[1], 0)
+    nz(ut_pos[1], 0)
 
-is_ut_buy = pos == 1 and pos[1] == -1
-is_ut_sell = pos == -1 and pos[1] == 1
+// --- B. SUPERTREND ---
+st_factor = input.float(3.0, "Supertrend Factor", group = grp_strat)
+st_period = input.int(10, "Supertrend Period", group = grp_strat)
+[st_val, st_dir] = ta.supertrend(st_factor, st_period)
+is_st_bull = st_dir == -1
 
-// --- D. SMART MONEY ENGINE (Identifying the 'Whales') ---
-// 1. FVG (Fair Value Gap)
-is_bull_fvg = low > high[2]
-is_bear_fvg = high < low[2]
+// --- C. RSI CUSTOM ---
+rsi_val = ta.rsi(rsi_src, rsi_len)
 
-// 2. Market Structure (BOS - Break of Structure)
+// --- D. SMART MONEY ---
+fvg_bull = low > high[2]
+fvg_bear = high < low[2]
 ph = ta.pivothigh(high, 5, 5)
 pl = ta.pivotlow(low, 5, 5)
-var float last_ph = na
-var float last_pl = na
-
-if not na(ph)
-    last_ph := ph
+var float last_ob_bull = na
+var float last_ob_bear = na
 if not na(pl)
-    last_pl := pl
+    last_ob_bull := low[5]
+if not na(ph)
+    last_ob_bear := high[5]
 
-bos_bull = ta.crossover(close, last_ph) // Breakout Up
-bos_bear = ta.crossunder(close, last_pl) // Breakout Down
+// --- E. MULTI-TIMEFRAME ---
+get_trend() =>
+    e1 = ta.ema(close, 50)
+    e2 = ta.ema(close, 200)
+    close > e1 and e1 > e2 ? 1 : close < e1 and e1 < e2 ? -1 : 0
 
-// =============================================================================
-// 3. THE NEXUS VOTING SYSTEM (CONFLUENCE)
-// =============================================================================
-// Use a weighted score to determine entry.
-// Max Score = 100. Threshold = 80 (Super Ultra Precision).
-
-var float total_score = 0.0
-
-// Reset score
-score_bull = 0.0
-score_bear = 0.0
-
-// 1. Trend (Weight: 30%)
-if is_bull_trend 
-    score_bull += 30
-else 
-    score_bear += 30
-
-// 2. Momentum (Weight: 20%)
-if is_bull_mom
-    score_bull += 20
-if is_bear_mom
-    score_bear += 20
-
-// 3. Volatility (Weight: 20%)
-// We check if price is above UT Trailing Stop
-if close > xATRTrailingStop
-    score_bull += 20
-else
-    score_bear += 20
-
-// 4. Smart Money (Weight: 30%)
-// If we just broke structure or filled an FVG
-if bos_bull or is_bull_fvg
-    score_bull += 30
-if bos_bear or is_bear_fvg
-    score_bear += 30
-
-// ENTRY TRIGGERS
-// Only enter if Score >= 80 (High Confidence)
-buy_signal = score_bull >= 80
-sell_signal = score_bear >= 80
+t_h1 = request.security(syminfo.tickerid, "60", get_trend())
+t_h4 = request.security(syminfo.tickerid, "240", get_trend())
 
 // =============================================================================
-// 4. PREDICTION MODULE (FUTURE TARGETS)
+// 3. DECISION ENGINE & SIGNALS
 // =============================================================================
-// Using Fibonacci Extensions based on last swing
-var float proj_tp1 = na
-var float proj_tp2 = na
-var float proj_sl = na
+var float q_score = 50.0
 
+// 1. Trend Score
+score_trend = 0
+if is_st_bull
+    score_trend += 20
+if t_h1 == 1
+    score_trend += 10
+if t_h4 == 1
+    score_trend += 10
+if not is_st_bull
+    score_trend -= 20
+if t_h1 == -1
+    score_trend -= 10
+if t_h4 == -1
+    score_trend -= 10
+
+// 2. Momentum Score
+score_mom = 0
+if rsi_val > 50 
+    score_mom += 10
+if ut_pos == 1
+    score_mom += 20
+if rsi_val < 50
+    score_mom -= 10
+if ut_pos == -1
+    score_mom -= 20
+
+// Final Score
+final_score = 50 + score_trend + score_mom
+final_score := math.max(0, math.min(100, final_score))
+
+buy_signal = final_score >= 80
+sell_signal = final_score <= 20
+
+// Time since last signal
+last_buy = ta.barssince(buy_signal)
+last_sell = ta.barssince(sell_signal)
+
+// =============================================================================
+// 4. PLANNING & EXECUTION (TP/SL CALCULATOR)
+// =============================================================================
+atr = ta.atr(14)
+
+pred_stop_buy  = close - (atr * sl_mult)
+pred_target_buy = close + (atr * tp_mult)
+pred_stop_sell = close + (atr * sl_mult)
+pred_target_sell = close - (atr * tp_mult)
+
+est_profit_buy = ((pred_target_buy - close) / close) * 100
+est_profit_sell = ((close - pred_target_sell) / close) * 100
+
+// Execution
 if buy_signal
-    swing_h = last_ph ? last_ph : high
-    swing_l = last_pl ? last_pl : low
-    diff = swing_h - swing_l
-    proj_tp1 := close + diff * 0.618
-    proj_tp2 := close + diff * 1.618
-    proj_sl := swing_l
+    strategy.entry("LONG", strategy.long)
+    strategy.exit("TP/SL", "LONG", stop = pred_stop_buy, limit = pred_target_buy)
 
 if sell_signal
-    swing_h = last_ph ? last_ph : high
-    swing_l = last_pl ? last_pl : low
-    diff = swing_h - swing_l
-    proj_tp1 := close - diff * 0.618
-    proj_tp2 := close - diff * 1.618
-    proj_sl := swing_h
+    strategy.entry("SHORT", strategy.short)
+    strategy.exit("TP/SL", "SHORT", stop = pred_stop_sell, limit = pred_target_sell)
 
 // =============================================================================
-// 5. EXECUTION
+// 5. ENHANCED VISUALIZATION (THE "BEAUTY" UPDATE)
 // =============================================================================
-if buy_signal
-    strategy.entry("LONG", strategy.long, comment = "NEXUS BUY")
-    strategy.exit("TP/SL", "LONG", stop = proj_sl, limit = proj_tp2)
 
-if sell_signal
-    strategy.entry("SHORT", strategy.short, comment = "NEXUS SELL")
-    strategy.exit("TP/SL", "SHORT", stop = proj_sl, limit = proj_tp2)
+// B. Plot Signals (With Custom Colors & Sizes)
+// Check show_signals input
+plotshape(show_signals and buy_signal and sz_input == "Tiny", "BUY", shape.labelup, location.belowbar, col_buy, 0, "BUY", c_text, size = size.tiny)
+plotshape(show_signals and sell_signal and sz_input == "Tiny", "SELL", shape.labeldown, location.abovebar, col_sell, 0, "SELL", c_text, size = size.tiny)
+
+plotshape(show_signals and buy_signal and sz_input == "Small", "BUY", shape.labelup, location.belowbar, col_buy, 0, "BUY", c_text, size = size.small)
+plotshape(show_signals and sell_signal and sz_input == "Small", "SELL", shape.labeldown, location.abovebar, col_sell, 0, "SELL", c_text, size = size.small)
+
+plotshape(show_signals and buy_signal and sz_input == "Normal", "BUY", shape.labelup, location.belowbar, col_buy, 0, "BUY", c_text, size = size.normal)
+plotshape(show_signals and sell_signal and sz_input == "Normal", "SELL", shape.labeldown, location.abovebar, col_sell, 0, "SELL", c_text, size = size.normal)
+
+plotshape(show_signals and buy_signal and sz_input == "Large", "BUY", shape.labelup, location.belowbar, col_buy, 0, "BUY", c_text, size = size.large)
+plotshape(show_signals and sell_signal and sz_input == "Large", "SELL", shape.labeldown, location.abovebar, col_sell, 0, "SELL", c_text, size = size.large)
+
+plotshape(show_signals and buy_signal and sz_input == "Huge", "BUY", shape.labelup, location.belowbar, col_buy, 0, "BUY", c_text, size = size.huge)
+plotshape(show_signals and sell_signal and sz_input == "Huge", "SELL", shape.labeldown, location.abovebar, col_sell, 0, "SELL", c_text, size = size.huge)
+
+// C. Draw Professional TP/SL Lines
+var line l_entry = na
+var line l_tp    = na
+var line l_sl    = na
+var label lbl_tp = na
+var label lbl_sl = na
+
+if show_tpsl and (buy_signal or sell_signal)
+    // Clear old drawings for cleaner view (focus on latest)
+    line.delete(l_entry)
+    line.delete(l_tp)
+    line.delete(l_sl)
+    label.delete(lbl_tp)
+    label.delete(lbl_sl)
+    
+    // Determine Targets
+    target_price = buy_signal ? pred_target_buy : pred_target_sell
+    stop_price   = buy_signal ? pred_stop_buy : pred_stop_sell
+    entry_price  = close
+    sig_col      = buy_signal ? col_buy : col_sell
+    
+    // Draw Entry Line (Dotted)
+    l_entry := line.new(bar_index, entry_price, bar_index + 10, entry_price, color = color.gray, style = line.style_dotted)
+    
+    // Draw TP Line (Solid, Thick)
+    l_tp := line.new(bar_index, target_price, bar_index + 10, target_price, color = sig_col, style = line.style_solid, width = 2)
+    lbl_tp := label.new(bar_index + 10, target_price, "TP: " + str.tostring(target_price, format.mintick), color = sig_col, style = label.style_label_left, textcolor = color.black, size = size.tiny)
+    
+    // Draw SL Line (Solid, Thick)
+    l_sl := line.new(bar_index, stop_price, bar_index + 10, stop_price, color = color.red, style = line.style_solid, width = 2)
+    lbl_sl := label.new(bar_index + 10, stop_price, "SL: " + str.tostring(stop_price, format.mintick), color = color.red, style = label.style_label_left, textcolor = color.white, size = size.tiny)
+
 
 // =============================================================================
 // 6. BLOOMBERG TERMINAL DASHBOARD
 // =============================================================================
-var table dash = table.new(dash_pos == "Top Right" ? position.top_right : dash_pos == "Bottom Right" ? position.bottom_right : position.bottom_left, 4, 6, bgcolor = #000000, border_width = 1, frame_color = #ffffff)
+var table dash = table.new(dash_pos == "Top Right" ? position.top_right : dash_pos == "Bottom Right" ? position.bottom_right : dash_pos == "Bottom Left" ? position.bottom_left : dash_pos == "Top Left" ? position.top_left : position.middle_right, 4, 10, bgcolor = c_bg, border_width = 1, frame_color = color.white, border_color = color.gray)
 
 if show_dash and barstate.islast
     // -- HEADER --
-    table.cell(dash, 0, 0, "NEXUS AI", text_color = #00FF00, text_size = size.normal, text_halign = text.align_left)
-    table.cell(dash, 1, 0, "TERMINAL", text_color = #00FF00, text_size = size.normal, text_halign = text.align_right)
+    header_txt = syminfo.ticker + " | " + timeframe.period + " | " + (use_indo ? "PASAR: " : "MARKET: ") + (barstate.isrealtime ? "LIVE 🔴" : "CLOSED ⚫")
+    table.cell(dash, 0, 0, header_txt, text_color = color.white, text_size = size.normal, text_halign = text.align_left)
     table.merge_cells(dash, 0, 0, 3, 0)
-    
+
     // -- ROW 1: MARKET CONTEXT --
-    table.cell(dash, 0, 1, "TREND", text_color = color.gray, text_size = size.small)
-    table.cell(dash, 1, 1, is_bull_trend ? "BULLISH" : "BEARISH", text_color = is_bull_trend ? color.green : color.red, text_size = size.small, bgcolor = color.new(color.gray, 90))
+    table.cell(dash, 0, 1, "INDIKATOR", text_color = color.gray, text_size = size.small)
+    table.cell(dash, 1, 1, "STATUS", text_color = color.gray, text_size = size.small)
+    table.cell(dash, 2, 1, "VALUE", text_color = color.gray, text_size = size.small)
+    table.cell(dash, 3, 1, "TF TREND", text_color = color.gray, text_size = size.small)
+
+    // Row 2: Trend
+    t_txt = is_st_bull ? "BULLISH" : "BEARISH"
+    t_col = is_st_bull ? c_bull_std : c_bear_std
+    table.cell(dash, 0, 2, "Main Trend", text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 2, t_txt, text_color = t_col, bgcolor = color.new(t_col, 90), text_size = size.small)
+    table.cell(dash, 2, 2, str.tostring(close, format.mintick), text_color = color.silver, text_size = size.small)
     
-    table.cell(dash, 2, 1, "MOMENTUM", text_color = color.gray, text_size = size.small)
-    table.cell(dash, 3, 1, rsi > 50 ? "STRONG" : "WEAK", text_color = rsi > 50 ? color.green : color.red, text_size = size.small, bgcolor = color.new(color.gray, 90))
+    map_txt = (t_h1 == 1 ? "1H:🟢" : "1H:🔴") + " " + (t_h4 == 1 ? "4H:🟢" : "4H:🔴")
+    table.cell(dash, 3, 2, map_txt, text_color = color.white, text_size = size.small)
 
-    // -- ROW 2: SMART MONEY --
-    table.cell(dash, 0, 2, "STRUCTURE", text_color = color.gray, text_size = size.small)
-    table.cell(dash, 1, 2, close > last_ph ? "BREAKOUT" : close < last_pl ? "BREAKDOWN" : "RANGING", text_color = color.yellow, text_size = size.small)
+    // Row 3: RSI & Volatility
+    r_txt = rsi_val > 55 ? "OVERBOUGHT" : rsi_val < 45 ? "OVERSOLD" : "NEUTRAL"
+    r_col = rsi_val > 55 ? c_bear_std : rsi_val < 45 ? c_bull_std : c_neut
+    table.cell(dash, 0, 3, "RSI (" + str.tostring(rsi_len) + ")", text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 3, r_txt, text_color = r_col, text_size = size.small)
+    table.cell(dash, 2, 3, str.tostring(rsi_val, "#.0"), text_color = color.silver, text_size = size.small)
+    table.cell(dash, 3, 3, ut_pos == 1 ? "VOL: UP" : "VOL: DOWN", text_color = ut_pos == 1 ? c_bull_std : c_bear_std, text_size = size.small)
 
-    table.cell(dash, 2, 2, "VOLATILITY", text_color = color.gray, text_size = size.small)
-    table.cell(dash, 3, 2, high - low > ta.atr(14) ? "HIGH" : "NORMAL", text_color = color.white, text_size = size.small)
-
-    // -- ROW 3: SCORES --
-    table.cell(dash, 0, 3, "BULL SCORE", text_color = color.gray, text_size = size.small)
-    table.cell(dash, 1, 3, str.tostring(score_bull, "#"), text_color = score_bull > 50 ? color.green : color.gray, text_size = size.normal)
-
-    table.cell(dash, 2, 3, "BEAR SCORE", text_color = color.gray, text_size = size.small)
-    table.cell(dash, 3, 3, str.tostring(score_bear, "#"), text_color = score_bear > 50 ? color.red : color.gray, text_size = size.normal)
-
-    // -- ROW 4: PREDICTION --
-    pred_text = "NEUTRAL (WAIT)"
-    pred_col = color.gray
+    // -- ROW 4: SIGNAL TIMING --
+    last_sig_txt = "WAITING..."
+    if last_buy < last_sell and last_buy < 100
+        last_sig_txt := "BUY (" + str.tostring(last_buy) + " bars ago)"
+    else if last_sell < last_buy and last_sell < 100
+        last_sig_txt := "SELL (" + str.tostring(last_sell) + " bars ago)"
     
-    if score_bull >= 80
-        pred_text := "STRONG BUY >>>"
-        pred_col := color.green
-    else if score_bear >= 80
-        pred_text := "STRONG SELL <<<"
-        pred_col := color.red
-    
-    table.cell(dash, 0, 4, "PREDICTION", text_color = color.gray, text_size = size.small)
-    table.cell(dash, 1, 4, pred_text, text_color = color.black, bgcolor = pred_col, text_size = size.normal)
+    table.cell(dash, 0, 4, "LAST SIGNAL", text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 4, last_sig_txt, text_color = color.yellow, text_size = size.small)
     table.merge_cells(dash, 1, 4, 3, 4)
 
-    // -- ROW 5: TARGETS --
-    target_msg = "TP: " + str.tostring(proj_tp1, format.mintick) + " | SL: " + str.tostring(proj_sl, format.mintick)
-    table.cell(dash, 0, 5, target_msg, text_color = color.white, text_size = size.small)
-    table.merge_cells(dash, 0, 5, 3, 5)
+    // -- ROW 5: POSITION STATUS --
+    pos_size = strategy.position_size
+    pos_pnl  = strategy.openprofit
+    pos_txt = pos_size > 0 ? "LONG (OPEN)" : pos_size < 0 ? "SHORT (OPEN)" : "NO POSITION"
+    pos_col = pos_size > 0 ? c_bull_std : pos_size < 0 ? c_bear_std : color.gray
+    
+    table.cell(dash, 0, 5, "POSISI AKTIF", text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 5, pos_txt, text_color = pos_col, bgcolor = color.new(pos_col, 80), text_size = size.small)
+    table.cell(dash, 2, 5, "PnL: " + str.tostring(pos_pnl, "#.##"), text_color = pos_pnl >= 0 ? c_bull_std : c_bear_std, text_size = size.small)
+    table.merge_cells(dash, 2, 5, 3, 5)
 
-// =============================================================================
-// 7. VISUALS
-// =============================================================================
-// Candles
-barcolor(score_bull > 60 ? color.green : score_bear > 60 ? color.red : color.gray)
+    // -- ROW 6: AI TRADE PLAN (PREDICTION) --
+    // Show predicted entry/TP/SL based on current AI bias
+    bias = final_score >= 50 ? 1 : -1
+    t_tp = bias == 1 ? pred_target_buy : pred_target_sell
+    t_sl = bias == 1 ? pred_stop_buy : pred_stop_sell
+    t_prof = bias == 1 ? est_profit_buy : est_profit_sell
+    
+    table.cell(dash, 0, 6, "AI PREDICTION", text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 6, bias == 1 ? "ZONA BUY" : "ZONA SELL", text_color = bias == 1 ? c_bull_std : c_bear_std, text_size = size.small)
+    table.cell(dash, 2, 6, "Est. Profit", text_color = color.gray, text_size = size.small)
+    table.cell(dash, 3, 6, str.tostring(t_prof, "#.##") + "%", text_color = c_bull_std, text_size = size.small)
 
-// Projection Lines
-if show_lines and not na(proj_tp1)
-    line.new(bar_index, proj_tp1, bar_index + 10, proj_tp1, color = color.green, style = line.style_dashed)
-    line.new(bar_index, proj_sl, bar_index + 10, proj_sl, color = color.red, style = line.style_solid)
-    label.new(bar_index + 10, proj_tp1, "Target", textcolor = color.green, style = label.style_none)
-
+    // -- ROW 7: TARGETS --
+    table.cell(dash, 0, 7, "TARGET PRICE", text_color = color.gray, text_size = size.small)
+    table.cell(dash, 1, 7, "TP: " + str.tostring(t_tp, format.mintick), text_color = c_bull_std, text_size = size.small)
+    table.cell(dash, 2, 7, "STOP LOSS", text_color = color.gray, text_size = size.small)
+    table.cell(dash, 3, 7, "SL: " + str.tostring(t_sl, format.mintick), text_color = c_bear_std, text_size = size.small)

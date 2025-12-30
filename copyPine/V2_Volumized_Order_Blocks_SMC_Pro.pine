@@ -1,0 +1,141 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © fluxchart & Enhanced by Antigravity (Super Precision Edition)
+
+//@version=5
+strategy("SMC Pro: Super Precision & Layman UI", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 5000, margin_long = 0, margin_short = 0, initial_capital = 1000, default_qty_type = strategy.percent_of_equity, default_qty_value = 10, currency = currency.USD)
+
+// -----------------------------------------------------------------------------
+// 1. SETTINGS "GENIUS MODE"
+// -----------------------------------------------------------------------------
+grp_filt = "🧠 OTAK PINTAR (AI FILTERS)"
+use_adx    = input.bool(true, "Filter Tren Kuat (ADX)", group = grp_filt, tooltip = "Hanya trading saat tren sedang ngebut (Kuat).")
+use_cmf    = input.bool(true, "Deteksi Uang Bandar (CMF)", group = grp_filt, tooltip = "Pastikan ada uang besar masuk sebelum membeli.")
+adx_thres  = input.int(20, "Kekuatan Tren Min", group = grp_filt)
+
+grp_ui     = "📱 TAMPILAN PEMULA (EASY MODE)"
+show_dash  = input.bool(true, "Tampilkan Panel Info", group = grp_ui)
+pos_dash   = input.string("Top Right", "Posisi Panel", options = ["Top Right", "Bottom Right", "Bottom Left"], group = grp_ui)
+
+grp_strat  = "💰 MANAJEMEN UANG"
+rr_ratio   = input.float(2.5, "Target Keuntungan (Reward)", group = grp_strat, tooltip = "Setiap risiko 1$, target profit 2.5$.")
+
+// Colors
+c_bull = #00E676 // Bright Green
+c_bear = #FF1744 // Bright Red
+c_bg   = #131722 // Dark BG
+c_text = color.white
+
+// -----------------------------------------------------------------------------
+// 2. MESIN ANALISIS (SUPER PRECISION LOGIC)
+// -----------------------------------------------------------------------------
+
+// A. Tren Utama (EMA Cloud)
+// Jika EMA 20 di atas EMA 50 = Tren NAIK
+ema_fast = ta.ema(close, 20)
+ema_slow = ta.ema(close, 50)
+bg_trend = ema_fast > ema_slow
+
+// B. Kekuatan Tren (ADX)
+// ADX > 20 artinya pasar sedang bergerak kuat (bukan sideway)
+[di_plus, di_minus, adx_val] = ta.dmi(14, 14)
+is_trend_strong = not use_adx or adx_val > adx_thres
+
+// C. Aliran Uang Bandar (Chaikin Money Flow)
+// CMF > 0 artinya uang masuk (Akumulasi)
+ad_val = high == low ? 0 : ((2 * close - low - high) / (high - low)) * volume
+cmf_val = math.sum(ad_val, 20) / math.sum(volume, 20)
+is_money_in = not use_cmf or cmf_val > 0
+is_money_out = not use_cmf or cmf_val < 0
+
+// D. RSI (Momentum)
+rsi_val = ta.rsi(close, 14)
+
+// -----------------------------------------------------------------------------
+// 3. SINYAL ORDER BLOCK + KONFIRMASI (CONFLUENCE)
+// -----------------------------------------------------------------------------
+
+// Pola Bullish (Beli)
+// 1. Tren harus NAIK (EMA Fast > EMA Slow)
+// 2. Tren harus KUAT (ADX > 20)
+// 3. Ada Uang Masuk (CMF > 0)
+// 4. Ada pola Candle Engulfing (Order Block)
+bull_setup = close[1] < open[1] // candle kemaren merah
+bull_trigger = close > open and close > high[1] // candle sekarang hijau & makan merah
+bull_valid = bull_setup and bull_trigger and bg_trend and is_trend_strong and is_money_in and rsi_val > 45
+
+// Pola Bearish (Jual)
+bear_setup = close[1] > open[1] 
+bear_trigger = close < open and close < low[1]
+bear_valid = bear_setup and bear_trigger and not bg_trend and is_trend_strong and is_money_out and rsi_val < 55
+
+// -----------------------------------------------------------------------------
+// 4. EKSEKUSI & VISUALISASI
+// -----------------------------------------------------------------------------
+var box[] boxes = array.new<box>(0)
+
+if bull_valid
+    // Gambar Kotak
+    b = box.new(bar_index - 1, high[1], bar_index + 100, low[1], border_color = c_bull, bgcolor = color.new(c_bull, 80), text = "ZONA BELI\n(Kuat)", text_color = c_bull, text_size = size.small)
+    array.push(boxes, b)
+    
+    // Masuk Posisi
+    strategy.entry("BELI SEKARANG", strategy.long, comment = "Sniper Buy")
+    sl = low[1]
+    tp = close + (close - sl) * rr_ratio
+    strategy.exit("AMBIL UNTUNG", "BELI SEKARANG", stop = sl, limit = tp)
+
+if bear_valid
+    b = box.new(bar_index - 1, high[1], bar_index + 100, low[1], border_color = c_bear, bgcolor = color.new(c_bear, 80), text = "ZONA JUAL\n(Kuat)", text_color = c_bear, text_size = size.small)
+    array.push(boxes, b)
+
+    strategy.entry("JUAL SEKARANG", strategy.short, comment = "Sniper Sell")
+    sl = high[1]
+    tp = close - (sl - close) * rr_ratio
+    strategy.exit("AMBIL UNTUNG", "JUAL SEKARANG", stop = sl, limit = tp)
+
+// Hapus kotak lama
+if array.size(boxes) > 30
+    box.delete(array.shift(boxes))
+
+// -----------------------------------------------------------------------------
+// 5. DASHBOARD PEMULA (BAHASA MANUSIA)
+// -----------------------------------------------------------------------------
+var table pnl = table.new(pos_dash == "Top Right" ? position.top_right : pos_dash == "Bottom Right" ? position.bottom_right : position.bottom_left, 1, 5, bgcolor = #1e222d, border_width = 1, frame_color = color.gray)
+
+if show_dash and barstate.islast
+    // Header
+    table.cell(pnl, 0, 0, "🤖 ANALISA PASAR (AI)", text_color = color.gray, text_size = size.small)
+    
+    // Status Tren (Bahasa Gampang)
+    trend_msg = bg_trend ? "PASAR NAIK (UPTREND) �" : "PASAR TURUN (DOWNTREND) 📉"
+    trend_col = bg_trend ? c_bull : c_bear
+    table.cell(pnl, 0, 1, trend_msg, text_color = trend_col, text_size = size.normal, bgcolor = color.new(trend_col, 90))
+
+    // Status Kekuatan
+    power_msg = is_trend_strong ? "⚡ TREN SANGAT KUAT" : "💤 TREN LEMAH (Hati-Hati)"
+    table.cell(pnl, 0, 2, power_msg, text_color = is_trend_strong ? color.yellow : color.gray, text_size = size.small)
+
+    // Deteksi Uang Bandar
+    money_msg = cmf_val > 0 ? "💰 BANDAR SEDANG BELI" : "💸 BANDAR SEDANG JUAL"
+    table.cell(pnl, 0, 3, money_msg, text_color = cmf_val > 0 ? c_bull : c_bear, text_size = size.small)
+
+    // KEPUTUSAN FINAL (Action)
+    final_dec = "MENUNGGU..."
+    final_bg = color.gray
+    
+    if strategy.position_size > 0
+        final_dec := "TAHAN POSISI BELI (HOLD) 🟢"
+        final_bg := c_bull
+    else if strategy.position_size < 0
+        final_dec := "TAHAN POSISI JUAL (HOLD) 🔴"
+        final_bg := c_bear
+    else if bull_valid
+        final_dec := "!!! BELI SEKARANG !!!"
+        final_bg := c_bull
+    else if bear_valid
+        final_dec := "!!! JUAL SEKARANG !!!"
+        final_bg := c_bear
+    else 
+        final_dec := "JANGAN MASUK DULU ✋"
+    
+    table.cell(pnl, 0, 4, final_dec, text_color = color.white, bgcolor = final_bg, text_size = size.large)
