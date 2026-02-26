@@ -1,0 +1,727 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Combined & Enhanced by Antigravity (QUANTUM NOVA: PLATINUM V2)
+
+//@version=5
+strategy("QUANTUM NOVA: Bloomberg Terminal [Platinum+]", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 5000, initial_capital = 10000, default_qty_type = strategy.percent_of_equity, default_qty_value = 10, currency = currency.USD)
+
+// =============================================================================
+// 1. MASTER CONFIGURATION
+// =============================================================================
+grp_gen = "⚙️ GENERAL SETTINGS"
+show_dash   = input.bool(true, "Tampilkan Dashboard Bloomberg", group = grp_gen)
+dash_pos    = input.string("Top Right", "Posisi Dashboard", options = ["Top Right", "Bottom Right", "Bottom Left", "Top Left", "Middle Right"], group = grp_gen)
+use_indo    = input.bool(true, "Bahasa Indonesia", group = grp_gen)
+
+grp_vis = "🎨 VISUAL CUSTOMIZATION"
+show_signals= input.bool(true, "Tampilkan Label Sinyal (Custom)", group = grp_vis)
+col_buy     = input.color(#00FF00, "Warna Sinyal BUY", group = grp_vis)
+col_sell    = input.color(#FF0000, "Warna Sinyal SELL", group = grp_vis)
+sz_input    = input.string("Small", "Ukuran Label Sinyal", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = grp_vis)
+show_tpsl   = input.bool(true, "Gambar Garis TP/SL (Enhanced)", group = grp_vis)
+
+grp_strat = "🧠 STRATEGY & INDICATORS"
+rsi_len     = input.int(14, "RSI Length", group = grp_strat)
+rsi_src     = input.source(close, "RSI Source", group = grp_strat)
+use_smc     = input.bool(true, "Smart Money (OB + FVG)", group = grp_strat)
+use_utbot   = input.bool(true, "Volatility Bot (UT Bot)", group = grp_strat)
+use_super   = input.bool(true, "Supertrend (Trend)", group = grp_strat)
+
+grp_risk = "💰 RISK MANAGEMENT"
+tp_mult     = input.float(3.0, "Reward Ratio (TP)", group = grp_risk)
+sl_mult     = input.float(1.0, "Risk Ratio (SL)", group = grp_risk)
+
+// --- FLUX CHARTS CONFIGURATION (INTEGRATED) ---
+grp_flux = "🧬 FLUX CHARTS VOLUME BLOCKS"
+showInvalidated = input.bool(true, "Show Historic Zones", group = grp_flux)
+orderBlockVolumetricInfo = input.bool(true, "Volumetric Info", group = grp_flux)
+obEndMethod = input.string("Wick", "Zone Invalidation", options = ["Wick", "Close"],  group = grp_flux)
+combineOBs = true 
+maxATRMult = 3.5
+swingLength = input.int(10, 'Swing Length', minval = 3, tooltip="Swing length used for OB detection", group = grp_flux)
+zoneCount = input.string("Low", 'Zone Count', options = ["High", "Medium", "Low", "One"], group = grp_flux)
+bullOrderBlockColor = input(#08998180, 'Bullish Zone Color', group = grp_flux)
+bearOrderBlockColor = input(#f2364680, 'Bearish Zone Color', group = grp_flux)
+flux_textColor = input.color(#ffffff80, "Text Color", group = grp_flux)
+
+// Colors & Constants
+c_text = #FFFFFF 
+c_bg   = #000000 
+c_bull_std = #00FF00
+c_bear_std = #FF0000
+c_neut = #808080
+
+// =============================================================================
+// 2. CORE LOGIC INTEGRATION
+// =============================================================================
+
+// --- A. UT BOT ALERTS ---
+ut_key = input.int(1, "UT Bot Key Value", group = grp_strat)
+ut_period = input.int(10, "UT Bot Period", group = grp_strat)
+ut_atr = ta.atr(ut_period)
+ut_nLoss = ut_key * ut_atr
+ut_src = close
+
+var float ut_stop = 0.0
+ut_stop := if ut_src > nz(ut_stop[1], 0) and ut_src[1] > nz(ut_stop[1], 0)
+    math.max(nz(ut_stop[1]), ut_src - ut_nLoss)
+else if ut_src < nz(ut_stop[1], 0) and ut_src[1] < nz(ut_stop[1], 0)
+    math.min(nz(ut_stop[1]), ut_src + ut_nLoss)
+else 
+    if ut_src > nz(ut_stop[1], 0) 
+        ut_src - ut_nLoss 
+    else 
+        ut_src + ut_nLoss
+
+ut_pos = 0   
+ut_pos := if ut_src[1] < nz(ut_stop[1], 0) and ut_src > nz(ut_stop[1], 0)
+    1
+else if ut_src[1] > nz(ut_stop[1], 0) and ut_src < nz(ut_stop[1], 0)
+    -1
+else 
+    nz(ut_pos[1], 0)
+
+// --- B. SUPERTREND ---
+st_factor = input.float(3.0, "Supertrend Factor", group = grp_strat)
+st_period = input.int(10, "Supertrend Period", group = grp_strat)
+[st_val, st_dir] = ta.supertrend(st_factor, st_period)
+is_st_bull = st_dir == -1
+
+// --- C. RSI CUSTOM ---
+rsi_val = ta.rsi(rsi_src, rsi_len)
+
+// --- D. SMART MONEY (BASIC) ---
+// Kept for Score Calculation
+fvg_bull = low > high[2]
+fvg_bear = high < low[2]
+ph = ta.pivothigh(high, 5, 5)
+pl = ta.pivotlow(low, 5, 5)
+var float last_ob_bull = na
+var float last_ob_bear = na
+if not na(pl)
+    last_ob_bull := low[5]
+if not na(ph)
+    last_ob_bear := high[5]
+
+// --- E. MULTI-TIMEFRAME ---
+get_trend() =>
+    e1 = ta.ema(close, 50)
+    e2 = ta.ema(close, 200)
+    close > e1 and e1 > e2 ? 1 : close < e1 and e1 < e2 ? -1 : 0
+
+t_h1 = request.security(syminfo.tickerid, "60", get_trend())
+t_h4 = request.security(syminfo.tickerid, "240", get_trend())
+
+// =============================================================================
+// 3. FLUX CHARTS VOLUMIZED ORDER BLOCKS (INTEGRATED ENGINE)
+// =============================================================================
+const bool DEBUG = false
+const int maxBoxesCount = 500
+const float overlapThresholdPercentage = 0
+const int maxDistanceToLastBar = 1750
+const int maxOrderBlocks = 30
+OBsEnabled = true
+
+bullishOrderBlocks = zoneCount == "One" ? 1 : zoneCount == "Low" ? 3 : zoneCount == "Medium" ? 5 : 10
+bearishOrderBlocks = zoneCount == "One" ? 1 : zoneCount == "Low" ? 3 : zoneCount == "Medium" ? 5 : 10
+
+timeframe1Enabled = true
+timeframe1 = ""
+
+extendZonesBy = 15
+extendZonesDynamic = true
+combinedText = false
+volumeBarsPlace = "Left"
+mirrorVolumeBars = true
+
+volumeBarsLeftSide = (volumeBarsPlace == "Left")
+extendZonesByTime = extendZonesBy * timeframe.in_seconds(timeframe.period) * 1000
+
+flux_atr = ta.atr(10) // Renamed to avoid collision
+
+type orderBlockInfo
+    float top
+    float bottom
+    float obVolume
+    string obType
+    int startTime
+    float bbVolume
+    float obLowVolume
+    float obHighVolume
+    bool breaker
+    int breakTime
+    string timeframeStr
+    bool disabled = false
+    string combinedTimeframesStr = na
+    bool combined = false
+
+type orderBlock
+    orderBlockInfo info
+    bool isRendered = false
+
+    box orderBox = na
+    box breakerBox = na
+
+    line orderBoxLineTop = na
+    line orderBoxLineBottom = na
+    line breakerBoxLineTop = na
+    line breakerBoxLineBottom = na
+    
+    box orderBoxText = na
+    box orderBoxPositive = na
+    box orderBoxNegative = na
+
+    line orderSeperator = na
+    line orderTextSeperator = na
+
+createOrderBlock (orderBlockInfo orderBlockInfoF) =>
+    orderBlock newOrderBlock = orderBlock.new(orderBlockInfoF)
+    newOrderBlock
+
+safeDeleteOrderBlock (orderBlock orderBlockF) =>
+    orderBlockF.isRendered := false
+
+    box.delete(orderBlockF.orderBox)
+    box.delete(orderBlockF.breakerBox)
+    box.delete(orderBlockF.orderBoxText)
+    box.delete(orderBlockF.orderBoxPositive)
+    box.delete(orderBlockF.orderBoxNegative)
+
+    line.delete(orderBlockF.orderBoxLineTop)
+    line.delete(orderBlockF.orderBoxLineBottom)
+    line.delete(orderBlockF.breakerBoxLineTop)
+    line.delete(orderBlockF.breakerBoxLineBottom)
+    line.delete(orderBlockF.orderSeperator)
+    line.delete(orderBlockF.orderTextSeperator)
+
+type timeframeInfo
+    int index = na
+    string timeframeStr = na
+    bool isEnabled = false
+
+    orderBlockInfo[] bullishOrderBlocksList = na
+    orderBlockInfo[] bearishOrderBlocksList = na
+
+newTimeframeInfo (index, timeframeStr, isEnabled) =>
+    newTFInfo = timeframeInfo.new()
+    newTFInfo.index := index
+    newTFInfo.isEnabled := isEnabled
+    newTFInfo.timeframeStr := timeframeStr
+
+    newTFInfo
+
+type obSwing
+    int x = na    
+    float y = na
+    float swingVolume = na
+    bool crossed = false
+
+var timeframeInfo[] timeframeInfos = array.from(newTimeframeInfo(1, timeframe1, timeframe1Enabled))
+var bullishOrderBlocksList = array.new<orderBlockInfo>(0)
+var bearishOrderBlocksList = array.new<orderBlockInfo>(0)
+
+var allOrderBlocksList = array.new<orderBlock>(0)
+
+moveLine(_line, _x, _y, _x2) =>
+    line.set_xy1(_line, _x,  _y)
+    line.set_xy2(_line, _x2, _y)
+
+moveBox (_box, _topLeftX, _topLeftY, _bottomRightX, _bottomRightY) =>
+    box.set_lefttop(_box, _topLeftX, _topLeftY)
+    box.set_rightbottom(_box, _bottomRightX, _bottomRightY)
+
+isTimeframeLower (timeframe1F, timeframe2F) =>
+    timeframe.in_seconds(timeframe1F) < timeframe.in_seconds(timeframe2F)
+
+formatTimeframeString (formatTimeframe) =>
+    timeframeF = formatTimeframe == "" ? timeframe.period : formatTimeframe
+    
+    if str.contains(timeframeF, "D") or str.contains(timeframeF, "W") or str.contains(timeframeF, "S") or str.contains(timeframeF, "M")
+        timeframeF
+    else
+        seconds = timeframe.in_seconds(timeframeF)
+        if seconds >= 3600
+            hourCount = int(seconds / 3600)
+            str.tostring(hourCount) + " Hour" + (hourCount > 1 ? "s" : "")
+        else
+            timeframeF + " Min"
+
+colorWithTransparency (colorF, transparencyX) =>
+    color.new(colorF, color.t(colorF) * transparencyX)
+
+createOBBox (boxColor, transparencyX = 1.0, xlocType = xloc.bar_time) =>
+    box.new(na, na, na, na, text_size = size.normal, xloc = xlocType, extend = extend.none, bgcolor = colorWithTransparency(boxColor, transparencyX), text_color = flux_textColor, text_halign = text.align_center, border_color = #00000000)
+
+renderOrderBlock (orderBlock ob) =>
+    orderBlockInfo info = ob.info
+    ob.isRendered := true
+    orderColor = ob.info.obType == "Bull" ? bullOrderBlockColor : bearOrderBlockColor
+
+    if OBsEnabled and (not false or not (false and info.breaker)) and not (not showInvalidated and info.breaker)
+        ob.orderBox := createOBBox(orderColor, 1.5)
+        if ob.info.combined
+            ob.orderBox.set_bgcolor(colorWithTransparency(orderColor, 1.1))
+        ob.orderBoxText := createOBBox(color.new(color.white, 100))
+        if orderBlockVolumetricInfo
+            ob.orderBoxPositive := createOBBox(bullOrderBlockColor)
+            ob.orderBoxNegative := createOBBox(bearOrderBlockColor)
+            ob.orderSeperator := line.new(na,na,na,na,xloc.bar_time,extend.none,flux_textColor,line.style_dashed,1)
+            ob.orderTextSeperator := line.new(na,na,na,na,xloc.bar_time,extend.none,flux_textColor,line.style_solid,1)
+
+        zoneSize = extendZonesDynamic ? na(info.breakTime) ? extendZonesByTime : (info.breakTime - info.startTime) : extendZonesByTime
+        if na(info.breakTime)
+            zoneSize := (time + 1) - info.startTime
+
+        startX = volumeBarsLeftSide ? info.startTime : info.startTime + zoneSize - zoneSize / 3
+        maxEndX = volumeBarsLeftSide ? info.startTime + zoneSize / 3 : info.startTime + zoneSize
+
+        moveBox(ob.orderBox, info.startTime, info.top, info.startTime + zoneSize, info.bottom)
+        moveBox(ob.orderBoxText, volumeBarsLeftSide ? maxEndX : info.startTime, info.top, volumeBarsLeftSide ? info.startTime + zoneSize : startX, info.bottom)
+
+        percentage = int((math.min(info.obHighVolume, info.obLowVolume) / math.max(info.obHighVolume, info.obLowVolume)) * 100.0)
+        OBText = (na(ob.info.combinedTimeframesStr) ? formatTimeframeString(ob.info.timeframeStr) : ob.info.combinedTimeframesStr) + " OB"
+        box.set_text(ob.orderBoxText, (orderBlockVolumetricInfo ? str.tostring(ob.info.obVolume, format.volume) + " (" + str.tostring(percentage) + "%)\n" : "") + (combinedText and ob.info.combined ? "[Combined]\n" : "") + OBText)
+
+        if orderBlockVolumetricInfo
+            showHighLowBoxText = false
+
+            curEndXHigh = int(math.ceil((info.obHighVolume / info.obVolume) * (maxEndX - startX) + startX))
+            curEndXLow = int(math.ceil((info.obLowVolume / info.obVolume) * (maxEndX - startX) + startX))
+
+            moveBox(ob.orderBoxPositive, mirrorVolumeBars ? startX : curEndXLow, info.top, mirrorVolumeBars ? curEndXHigh : maxEndX, (info.bottom + info.top) / 2)
+            box.set_text(ob.orderBoxPositive, showHighLowBoxText ? str.tostring(info.obHighVolume, format.volume) : "")
+
+            moveBox(ob.orderBoxNegative, mirrorVolumeBars ? startX : curEndXHigh, info.bottom, mirrorVolumeBars ? curEndXLow : maxEndX, (info.bottom + info.top) / 2)
+            box.set_text(ob.orderBoxNegative, showHighLowBoxText ? str.tostring(info.obLowVolume, format.volume) : "")
+
+            moveLine(ob.orderSeperator, volumeBarsLeftSide ? startX : maxEndX, (info.bottom + info.top) / 2, volumeBarsLeftSide ? maxEndX : startX)
+
+            line.set_xy1(ob.orderTextSeperator, volumeBarsLeftSide ? maxEndX : startX, info.top)
+            line.set_xy2(ob.orderTextSeperator, volumeBarsLeftSide ? maxEndX : startX, info.bottom)
+
+findOBSwings(len) =>
+    var swingType = 0
+    var obSwing top = obSwing.new(na, na)
+    var obSwing bottom = obSwing.new(na, na)
+    
+    upper = ta.highest(len)
+    lower = ta.lowest(len)
+
+    swingType := high[len] > upper ? 0 : low[len] < lower ? 1 : swingType
+
+    if swingType == 0 and swingType[1] != 0
+        top := obSwing.new(bar_index[len], high[len], volume[len])
+    
+    if swingType == 1 and swingType[1] != 1
+        bottom := obSwing.new(bar_index[len], low[len], volume[len])
+
+    [top, bottom]
+
+findOrderBlocks () =>
+    if bar_index > last_bar_index - maxDistanceToLastBar
+        [top, btm] = findOBSwings(swingLength)
+        useBody = false
+        max = useBody ? math.max(close, open) : high
+        min = useBody ? math.min(close, open) : low
+
+        // Bullish Order Block
+        bullishBreaked = 0
+
+        if bullishOrderBlocksList.size() > 0
+            for i = bullishOrderBlocksList.size() - 1 to 0
+                currentOB = bullishOrderBlocksList.get(i)
+            
+                if not currentOB.breaker 
+                    if (obEndMethod == "Wick" ? low : math.min(open, close)) < currentOB.bottom
+                        currentOB.breaker := true
+                        currentOB.breakTime := time
+                        currentOB.bbVolume := volume
+                else
+                    if high > currentOB.top
+                        bullishOrderBlocksList.remove(i)
+                    else if i < bullishOrderBlocks and top.y < currentOB.top and top.y > currentOB.bottom 
+                        bullishBreaked := 1
+
+        if close > top.y and not top.crossed
+            top.crossed := true
+
+            boxBtm = max[1]
+            boxTop = min[1]
+            boxLoc = time[1]
+
+            for i = 1 to (bar_index - top.x) - 1
+                boxBtm := math.min(min[i], boxBtm)
+                boxTop := boxBtm == min[i] ? max[i] : boxTop
+                boxLoc := boxBtm == min[i] ? time[i] : boxLoc
+
+            newOrderBlockInfo = orderBlockInfo.new(boxTop, boxBtm, volume + volume[1] + volume[2], "Bull", boxLoc)
+            newOrderBlockInfo.obLowVolume := volume[2]
+            newOrderBlockInfo.obHighVolume := volume + volume[1]
+            
+            obSize = math.abs(newOrderBlockInfo.top - newOrderBlockInfo.bottom)
+            if obSize <= flux_atr * maxATRMult
+                bullishOrderBlocksList.unshift(newOrderBlockInfo)
+                if bullishOrderBlocksList.size() > maxOrderBlocks
+                    bullishOrderBlocksList.pop()
+
+        // Bearish Order Block
+        bearishBreaked = 0
+
+        if bearishOrderBlocksList.size() > 0
+            for i = bearishOrderBlocksList.size() - 1 to 0
+                currentOB = bearishOrderBlocksList.get(i)
+
+                if not currentOB.breaker 
+                    if (obEndMethod == "Wick" ? high : math.max(open, close)) > currentOB.top
+                        currentOB.breaker := true
+                        currentOB.breakTime := time
+                        currentOB.bbVolume := volume
+                else
+                    if low < currentOB.bottom
+                        bearishOrderBlocksList.remove(i)
+                    else if i < bearishOrderBlocks and btm.y > currentOB.bottom and btm.y < currentOB.top 
+                        bearishBreaked := 1
+
+        if close < btm.y and not btm.crossed
+            btm.crossed := true
+
+            boxBtm = min[1]
+            boxTop = max[1]
+            boxLoc = time[1]
+
+            for i = 1 to (bar_index - btm.x) - 1
+                boxTop := math.max(max[i], boxTop)
+                boxBtm := boxTop == max[i] ? min[i] : boxBtm
+                boxLoc := boxTop == max[i] ? time[i] : boxLoc
+
+            newOrderBlockInfo = orderBlockInfo.new(boxTop, boxBtm, volume + volume[1] + volume[2], "Bear", boxLoc)
+            newOrderBlockInfo.obLowVolume := volume + volume[1]
+            newOrderBlockInfo.obHighVolume := volume[2]
+
+            obSize = math.abs(newOrderBlockInfo.top - newOrderBlockInfo.bottom)
+            if obSize <= flux_atr * maxATRMult
+                bearishOrderBlocksList.unshift(newOrderBlockInfo)
+                if bearishOrderBlocksList.size() > maxOrderBlocks
+                    bearishOrderBlocksList.pop()
+    true
+
+areaOfOB (orderBlockInfo OBInfoF) =>
+    float XA1 = OBInfoF.startTime
+    float XA2 = na(OBInfoF.breakTime) ? time + 1 : OBInfoF.breakTime
+    float YA1 = OBInfoF.top
+    float YA2 = OBInfoF.bottom
+    float edge1 = math.sqrt((XA2 - XA1) * (XA2 - XA1) + (YA2 - YA2) * (YA2 - YA2))
+    float edge2 = math.sqrt((XA2 - XA2) * (XA2 - XA2) + (YA2 - YA1) * (YA2 - YA1))
+    float totalArea = edge1 * edge2
+    totalArea
+
+doOBsTouch (orderBlockInfo OBInfo1, orderBlockInfo OBInfo2) =>
+    float XA1 = OBInfo1.startTime
+    float XA2 = na(OBInfo1.breakTime) ? time + 1 : OBInfo1.breakTime
+    float YA1 = OBInfo1.top
+    float YA2 = OBInfo1.bottom
+
+    float XB1 = OBInfo2.startTime
+    float XB2 = na(OBInfo2.breakTime) ? time + 1 : OBInfo2.breakTime
+    float YB1 = OBInfo2.top
+    float YB2 = OBInfo2.bottom
+    float intersectionArea = math.max(0, math.min(XA2, XB2) - math.max(XA1, XB1)) * math.max(0, math.min(YA1, YB1) - math.max(YA2, YB2))
+    float unionArea = areaOfOB(OBInfo1) + areaOfOB(OBInfo2) - intersectionArea
+    
+    float overlapPercentage = (intersectionArea / unionArea) * 100.0
+
+    if overlapPercentage > overlapThresholdPercentage
+        true
+    else
+        false
+
+isOBValid (orderBlockInfo OBInfo) =>
+    valid = true
+    if OBInfo.disabled
+        valid := false
+    valid
+
+combineOBsFunc () =>
+    if allOrderBlocksList.size() > 0
+        lastCombinations = 999
+        while lastCombinations > 0
+            lastCombinations := 0
+            for i = 0 to allOrderBlocksList.size() - 1
+                curOB1 = allOrderBlocksList.get(i)
+                for j = 0 to allOrderBlocksList.size() - 1
+                    curOB2 = allOrderBlocksList.get(j)
+                    if i == j
+                        continue
+                    if not isOBValid(curOB1.info) or not isOBValid(curOB2.info)
+                        continue
+                    if curOB1.info.obType != curOB2.info.obType
+                        continue
+                    if doOBsTouch(curOB1.info, curOB2.info)
+                        curOB1.info.disabled := true
+                        curOB2.info.disabled := true
+                        orderBlock newOB = createOrderBlock(orderBlockInfo.new(math.max(curOB1.info.top, curOB2.info.top), math.min(curOB1.info.bottom, curOB2.info.bottom), curOB1.info.obVolume + curOB2.info.obVolume, curOB1.info.obType))
+                        newOB.info.startTime := math.min(curOB1.info.startTime, curOB2.info.startTime)
+                        newOB.info.breakTime := math.max(nz(curOB1.info.breakTime), nz(curOB2.info.breakTime))
+                        newOB.info.breakTime := newOB.info.breakTime == 0 ? na : newOB.info.breakTime
+                        newOB.info.timeframeStr := curOB1.info.timeframeStr
+
+                        newOB.info.obVolume := curOB1.info.obVolume + curOB2.info.obVolume
+                        newOB.info.obLowVolume := curOB1.info.obLowVolume + curOB2.info.obLowVolume
+                        newOB.info.obHighVolume := curOB1.info.obHighVolume + curOB2.info.obHighVolume
+                        newOB.info.bbVolume := nz(curOB1.info.bbVolume, 0) + nz(curOB2.info.bbVolume, 0)
+                        newOB.info.breaker := curOB1.info.breaker or curOB2.info.breaker
+                        
+                        newOB.info.combined := true
+                        if timeframe.in_seconds(curOB1.info.timeframeStr) != timeframe.in_seconds(curOB2.info.timeframeStr)
+                            newOB.info.combinedTimeframesStr := (na(curOB1.info.combinedTimeframesStr) ? formatTimeframeString(curOB1.info.timeframeStr) : curOB1.info.combinedTimeframesStr) + " & " + (na(curOB2.info.combinedTimeframesStr) ? formatTimeframeString(curOB2.info.timeframeStr) : curOB2.info.combinedTimeframesStr)
+                        allOrderBlocksList.unshift(newOB)
+                        lastCombinations += 1
+
+reqSeq (timeframeStr, bullishList, bearishList) =>
+    [bullishOrderBlocksListF, bearishOrderBlocksListF] = request.security(syminfo.tickerid, timeframeStr, [bullishList, bearishList])
+    [bullishOrderBlocksListF, bearishOrderBlocksListF]
+
+getTFData (timeframeInfo timeframeInfoF, timeframeStr) =>
+    if not isTimeframeLower(timeframeInfoF.timeframeStr, timeframe.period) and timeframeInfoF.isEnabled
+        [bullishOrderBlocksListF, bearishOrderBlocksListF] = reqSeq(timeframeStr, bullishOrderBlocksList, bearishOrderBlocksList)
+        [bullishOrderBlocksListF, bearishOrderBlocksListF]
+    else
+        [na, na]
+
+handleTimeframeInfo (timeframeInfo timeframeInfoF, bullishOrderBlocksListF, bearishOrderBlocksListF) =>
+    if not isTimeframeLower(timeframeInfoF.timeframeStr, timeframe.period) and timeframeInfoF.isEnabled
+        timeframeInfoF.bullishOrderBlocksList := bullishOrderBlocksListF
+        timeframeInfoF.bearishOrderBlocksList := bearishOrderBlocksListF
+
+handleOrderBlocksFinal () =>
+    if DEBUG
+        log.info("Bullish OB Count " + str.tostring(bullishOrderBlocksList.size()))
+        log.info("Bearish OB Count " + str.tostring(bearishOrderBlocksList.size()))
+
+    if allOrderBlocksList.size () > 0
+        for i = 0 to allOrderBlocksList.size() - 1
+            safeDeleteOrderBlock(allOrderBlocksList.get(i))
+    allOrderBlocksList.clear()    
+
+    for i = 0 to timeframeInfos.size() - 1
+        curTimeframe = timeframeInfos.get(i)
+        if not curTimeframe.isEnabled
+            continue
+        if curTimeframe.bullishOrderBlocksList.size() > 0
+            for j = 0 to math.min(curTimeframe.bullishOrderBlocksList.size() - 1, bullishOrderBlocks - 1)
+                orderBlockInfoF = curTimeframe.bullishOrderBlocksList.get(j)
+                orderBlockInfoF.timeframeStr := curTimeframe.timeframeStr
+                allOrderBlocksList.unshift(createOrderBlock(orderBlockInfo.copy(orderBlockInfoF)))
+
+        if curTimeframe.bearishOrderBlocksList.size() > 0
+            for j = 0 to math.min(curTimeframe.bearishOrderBlocksList.size() - 1, bearishOrderBlocks - 1)
+                orderBlockInfoF = curTimeframe.bearishOrderBlocksList.get(j)
+                orderBlockInfoF.timeframeStr := curTimeframe.timeframeStr
+                allOrderBlocksList.unshift(createOrderBlock(orderBlockInfo.copy(orderBlockInfoF)))
+
+    if combineOBs
+        combineOBsFunc()    
+
+    if allOrderBlocksList.size() > 0
+        for i = 0 to allOrderBlocksList.size() - 1
+            curOB = allOrderBlocksList.get(i)
+            if isOBValid(curOB.info)
+                renderOrderBlock(curOB)
+
+findOrderBlocks()
+
+[bullishOrderBlocksListTimeframe1, bearishOrderBlocksListTimeframe1] = getTFData(timeframeInfos.get(0), timeframe1)
+
+if barstate.isconfirmed
+    handleTimeframeInfo(timeframeInfos.get(0), bullishOrderBlocksListTimeframe1, bearishOrderBlocksListTimeframe1)
+    handleOrderBlocksFinal()
+
+// =============================================================================
+// 4. DECISION ENGINE & SIGNALS (ORIGINAL)
+// =============================================================================
+var float q_score = 50.0
+
+// 1. Trend Score
+score_trend = 0
+if is_st_bull
+    score_trend += 20
+if t_h1 == 1
+    score_trend += 10
+if t_h4 == 1
+    score_trend += 10
+if not is_st_bull
+    score_trend -= 20
+if t_h1 == -1
+    score_trend -= 10
+if t_h4 == -1
+    score_trend -= 10
+
+// 2. Momentum Score
+score_mom = 0
+if rsi_val > 50 
+    score_mom += 10
+if ut_pos == 1
+    score_mom += 20
+if rsi_val < 50
+    score_mom -= 10
+if ut_pos == -1
+    score_mom -= 20
+
+// Final Score
+final_score = 50 + score_trend + score_mom
+final_score := math.max(0, math.min(100, final_score))
+
+buy_signal = final_score >= 80
+sell_signal = final_score <= 20
+
+// Time since last signal
+last_buy = ta.barssince(buy_signal)
+last_sell = ta.barssince(sell_signal)
+
+// =============================================================================
+// 5. PLANNING & EXECUTION (TP/SL CALCULATOR)
+// =============================================================================
+atr = ta.atr(14)
+
+pred_stop_buy  = close - (atr * sl_mult)
+pred_target_buy = close + (atr * tp_mult)
+pred_stop_sell = close + (atr * sl_mult)
+pred_target_sell = close - (atr * tp_mult)
+
+est_profit_buy = ((pred_target_buy - close) / close) * 100
+est_profit_sell = ((close - pred_target_sell) / close) * 100
+
+// Execution
+if buy_signal
+    strategy.entry("LONG", strategy.long)
+    strategy.exit("TP/SL", "LONG", stop = pred_stop_buy, limit = pred_target_buy)
+
+if sell_signal
+    strategy.entry("SHORT", strategy.short)
+    strategy.exit("TP/SL", "SHORT", stop = pred_stop_sell, limit = pred_target_sell)
+
+// =============================================================================
+// 6. ENHANCED VISUALIZATION
+// =============================================================================
+
+plotshape(show_signals and buy_signal and sz_input == "Tiny", "BUY", shape.labelup, location.belowbar, col_buy, 0, "BUY", c_text, size = size.tiny)
+plotshape(show_signals and sell_signal and sz_input == "Tiny", "SELL", shape.labeldown, location.abovebar, col_sell, 0, "SELL", c_text, size = size.tiny)
+
+plotshape(show_signals and buy_signal and sz_input == "Small", "BUY", shape.labelup, location.belowbar, col_buy, 0, "BUY", c_text, size = size.small)
+plotshape(show_signals and sell_signal and sz_input == "Small", "SELL", shape.labeldown, location.abovebar, col_sell, 0, "SELL", c_text, size = size.small)
+
+plotshape(show_signals and buy_signal and sz_input == "Normal", "BUY", shape.labelup, location.belowbar, col_buy, 0, "BUY", c_text, size = size.normal)
+plotshape(show_signals and sell_signal and sz_input == "Normal", "SELL", shape.labeldown, location.abovebar, col_sell, 0, "SELL", c_text, size = size.normal)
+
+plotshape(show_signals and buy_signal and sz_input == "Large", "BUY", shape.labelup, location.belowbar, col_buy, 0, "BUY", c_text, size = size.large)
+plotshape(show_signals and sell_signal and sz_input == "Large", "SELL", shape.labeldown, location.abovebar, col_sell, 0, "SELL", c_text, size = size.large)
+
+plotshape(show_signals and buy_signal and sz_input == "Huge", "BUY", shape.labelup, location.belowbar, col_buy, 0, "BUY", c_text, size = size.huge)
+plotshape(show_signals and sell_signal and sz_input == "Huge", "SELL", shape.labeldown, location.abovebar, col_sell, 0, "SELL", c_text, size = size.huge)
+
+// C. Draw Professional TP/SL Lines
+var line l_entry = na
+var line l_tp    = na
+var line l_sl    = na
+var label lbl_tp = na
+var label lbl_sl = na
+
+if show_tpsl and (buy_signal or sell_signal)
+    // Clear old drawings for cleaner view (focus on latest)
+    line.delete(l_entry)
+    line.delete(l_tp)
+    line.delete(l_sl)
+    label.delete(lbl_tp)
+    label.delete(lbl_sl)
+    
+    // Determine Targets
+    target_price = buy_signal ? pred_target_buy : pred_target_sell
+    stop_price   = buy_signal ? pred_stop_buy : pred_stop_sell
+    entry_price  = close
+    sig_col      = buy_signal ? col_buy : col_sell
+    
+    // Draw Entry Line (Dotted)
+    l_entry := line.new(bar_index, entry_price, bar_index + 10, entry_price, color = color.gray, style = line.style_dotted)
+    
+    // Draw TP Line (Solid, Thick)
+    l_tp := line.new(bar_index, target_price, bar_index + 10, target_price, color = sig_col, style = line.style_solid, width = 2)
+    lbl_tp := label.new(bar_index + 10, target_price, "TP: " + str.tostring(target_price, format.mintick), color = sig_col, style = label.style_label_left, textcolor = color.black, size = size.tiny)
+    
+    // Draw SL Line (Solid, Thick)
+    l_sl := line.new(bar_index, stop_price, bar_index + 10, stop_price, color = color.red, style = line.style_solid, width = 2)
+    lbl_sl := label.new(bar_index + 10, stop_price, "SL: " + str.tostring(stop_price, format.mintick), color = color.red, style = label.style_label_left, textcolor = color.white, size = size.tiny)
+
+
+// =============================================================================
+// 7. BLOOMBERG TERMINAL DASHBOARD
+// =============================================================================
+var table dash = table.new(dash_pos == "Top Right" ? position.top_right : dash_pos == "Bottom Right" ? position.bottom_right : dash_pos == "Bottom Left" ? position.bottom_left : dash_pos == "Top Left" ? position.top_left : position.middle_right, 4, 10, bgcolor = c_bg, border_width = 1, frame_color = color.white, border_color = color.gray)
+
+if show_dash and barstate.islast
+    // -- HEADER --
+    header_txt = syminfo.ticker + " | " + timeframe.period + " | " + (use_indo ? "PASAR: " : "MARKET: ") + (barstate.isrealtime ? "LIVE 🔴" : "CLOSED ⚫")
+    table.cell(dash, 0, 0, header_txt, text_color = color.white, text_size = size.normal, text_halign = text.align_left)
+    table.merge_cells(dash, 0, 0, 3, 0)
+
+    // -- ROW 1: MARKET CONTEXT --
+    table.cell(dash, 0, 1, "INDIKATOR", text_color = color.gray, text_size = size.small)
+    table.cell(dash, 1, 1, "STATUS", text_color = color.gray, text_size = size.small)
+    table.cell(dash, 2, 1, "VALUE", text_color = color.gray, text_size = size.small)
+    table.cell(dash, 3, 1, "TF TREND", text_color = color.gray, text_size = size.small)
+
+    // Row 2: Trend
+    t_txt = is_st_bull ? "BULLISH" : "BEARISH"
+    t_col = is_st_bull ? c_bull_std : c_bear_std
+    table.cell(dash, 0, 2, "Main Trend", text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 2, t_txt, text_color = t_col, bgcolor = color.new(t_col, 90), text_size = size.small)
+    table.cell(dash, 2, 2, str.tostring(close, format.mintick), text_color = color.silver, text_size = size.small)
+    
+    map_txt = (t_h1 == 1 ? "1H:🟢" : "1H:🔴") + " " + (t_h4 == 1 ? "4H:🟢" : "4H:🔴")
+    table.cell(dash, 3, 2, map_txt, text_color = color.white, text_size = size.small)
+
+    // Row 3: RSI & Volatility
+    r_txt = rsi_val > 55 ? "OVERBOUGHT" : rsi_val < 45 ? "OVERSOLD" : "NEUTRAL"
+    r_col = rsi_val > 55 ? c_bear_std : rsi_val < 45 ? c_bull_std : c_neut
+    table.cell(dash, 0, 3, "RSI (" + str.tostring(rsi_len) + ")", text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 3, r_txt, text_color = r_col, text_size = size.small)
+    table.cell(dash, 2, 3, str.tostring(rsi_val, "#.0"), text_color = color.silver, text_size = size.small)
+    table.cell(dash, 3, 3, ut_pos == 1 ? "VOL: UP" : "VOL: DOWN", text_color = ut_pos == 1 ? c_bull_std : c_bear_std, text_size = size.small)
+
+    // -- ROW 4: SIGNAL TIMING --
+    last_sig_txt = "WAITING..."
+    if last_buy < last_sell and last_buy < 100
+        last_sig_txt := "BUY (" + str.tostring(last_buy) + " bars ago)"
+    else if last_sell < last_buy and last_sell < 100
+        last_sig_txt := "SELL (" + str.tostring(last_sell) + " bars ago)"
+    
+    table.cell(dash, 0, 4, "LAST SIGNAL", text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 4, last_sig_txt, text_color = color.yellow, text_size = size.small)
+    table.merge_cells(dash, 1, 4, 3, 4)
+
+    // -- ROW 5: POSITION STATUS --
+    pos_size = strategy.position_size
+    pos_pnl  = strategy.openprofit
+    pos_txt = pos_size > 0 ? "LONG (OPEN)" : pos_size < 0 ? "SHORT (OPEN)" : "NO POSITION"
+    pos_col = pos_size > 0 ? c_bull_std : pos_size < 0 ? c_bear_std : color.gray
+    
+    table.cell(dash, 0, 5, "POSISI AKTIF", text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 5, pos_txt, text_color = pos_col, bgcolor = color.new(pos_col, 80), text_size = size.small)
+    table.cell(dash, 2, 5, "PnL: " + str.tostring(pos_pnl, "#.##"), text_color = pos_pnl >= 0 ? c_bull_std : c_bear_std, text_size = size.small)
+    table.merge_cells(dash, 2, 5, 3, 5)
+
+    // -- ROW 6: AI TRADE PLAN (PREDICTION) --
+    // Show predicted entry/TP/SL based on current AI bias
+    bias = final_score >= 50 ? 1 : -1
+    t_tp = bias == 1 ? pred_target_buy : pred_target_sell
+    t_sl = bias == 1 ? pred_stop_buy : pred_stop_sell
+    t_prof = bias == 1 ? est_profit_buy : est_profit_sell
+    
+    table.cell(dash, 0, 6, "AI PREDICTION", text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 6, bias == 1 ? "ZONA BUY" : "ZONA SELL", text_color = bias == 1 ? c_bull_std : c_bear_std, text_size = size.small)
+    table.cell(dash, 2, 6, "Est. Profit", text_color = color.gray, text_size = size.small)
+    table.cell(dash, 3, 6, str.tostring(t_prof, "#.##") + "%", text_color = c_bull_std, text_size = size.small)
+
+    // -- ROW 7: TARGETS --
+    table.cell(dash, 0, 7, "TARGET PRICE", text_color = color.gray, text_size = size.small)
+    table.cell(dash, 1, 7, "TP: " + str.tostring(t_tp, format.mintick), text_color = c_bull_std, text_size = size.small)
+    table.cell(dash, 2, 7, "STOP LOSS", text_color = color.gray, text_size = size.small)
+    table.cell(dash, 3, 7, "SL: " + str.tostring(t_sl, format.mintick), text_color = c_bear_std, text_size = size.small)
