@@ -83,6 +83,7 @@ Indikator ini sangat bisa dikustomisasi (Customizable). Buka menu Pengaturan (ik
 *   **Smart Money Concepts (LUX):** Anda bisa menyalakan/mematikan tampilan Internal Structure, Swing Structure, FVG, dan Equal Highs/Lows agar chart tidak terlalu penuh. Sesuaikan dengan kenyamanan mata Anda.
 *   **🕒 MULTI-TIME PERIOD CHARTS (MTPC):** Fitur untuk menggambar rentang Candle High/Low atau Open/Close dari timeframe yang lebih tinggi langsung ke chart berjalan (sebagai kotak latar). Sangat berguna melihat batas fluktuasi *Higher Timeframe*.
 *   **🕯️ ICT HTF CANDLES (FADI REPLICA):** Indikator revolusioner yang dapat mencetak hingga 6 buah rentetan Candlestick lengkap (Body, Wick & Label) dari berbagai *Higher Timeframe* (Misal: 15m, 1H, 4H, Daily) secara berjejer di area kosong sebelah kanan Harga Sekarang (*Future Space*). Menghadirkan konteks garis besar tren tanpa mengotori chart utama Anda.
+*   **📈 CISD WITH ALERTS [NEO|]:** Indikator *Change in State of Delivery* untuk mendeteksi pergeseran awal momentum institusional. Menggambar garis level Bullish/Bearish yang diperpanjang ketika harga berbalik arah secara seketika. Dilengkapi peringatan/alert bawaan dan tabel status "Bullish/Bearish" di sudut chart.
 
 ---
 
