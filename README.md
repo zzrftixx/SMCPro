@@ -81,6 +81,8 @@ Indikator ini sangat bisa dikustomisasi (Customizable). Buka menu Pengaturan (ik
 *   **⚙️ VOLUMIZED ORDER BLOCKS:** Atur ketebalan riwayat Order Block, periode Swing, dan metrik Volume.
 *   **🏗️ MTF STRUCTURE (BOS & MSS):** Nyalakan struktur dari Timeframe yang lebih tinggi (Sangat disarankan untuk dinyalakan 1 TF di atas TF Anda trading).
 *   **Smart Money Concepts (LUX):** Anda bisa menyalakan/mematikan tampilan Internal Structure, Swing Structure, FVG, dan Equal Highs/Lows agar chart tidak terlalu penuh. Sesuaikan dengan kenyamanan mata Anda.
+*   **🕒 MULTI-TIME PERIOD CHARTS (MTPC):** Fitur untuk menggambar rentang Candle High/Low atau Open/Close dari timeframe yang lebih tinggi langsung ke chart berjalan (sebagai kotak latar). Sangat berguna melihat batas fluktuasi *Higher Timeframe*.
+*   **🕯️ ICT HTF CANDLES (FADI REPLICA):** Indikator revolusioner yang dapat mencetak hingga 6 buah rentetan Candlestick lengkap (Body, Wick & Label) dari berbagai *Higher Timeframe* (Misal: 15m, 1H, 4H, Daily) secara berjejer di area kosong sebelah kanan Harga Sekarang (*Future Space*). Menghadirkan konteks garis besar tren tanpa mengotori chart utama Anda.
 
 ---
 

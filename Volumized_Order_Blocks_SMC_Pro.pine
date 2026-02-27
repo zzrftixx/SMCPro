@@ -1844,6 +1844,9 @@ f_draw_ict_group(array<ict_candle> arr, string tf_str, int start_offset) =>
         int group_start = offset
         float highest_p = na
         
+        // Calculate the time difference between current and previous bar
+        int time_diff = time - time[1]
+        
         for i = array.size(arr) - 1 to 0
             if i < array.size(arr)
                 ict_candle c_data = array.get(arr, i)
@@ -1851,12 +1854,11 @@ f_draw_ict_group(array<ict_candle> arr, string tf_str, int start_offset) =>
                 color bord_col = c_data.c >= c_data.o ? ict_bord_bull : ict_bord_bear
                 color w_col = c_data.c >= c_data.o ? ict_wick_bull : ict_wick_bear
                 
-                int left = bar_index + offset
-                int right = left + ict_width
+                int left_time  = time + (offset * time_diff)
+                int right_time = time + ((offset + ict_width) * time_diff)
+                int center_time = math.round((left_time + right_time) / 2)
                 
-                int center = math.round((left + right) / 2)
-                
-                line lWick = line.new(center, c_data.h, center, c_data.l, color=w_col)
+                line lWick = line.new(center_time, c_data.h, center_time, c_data.l, xloc=xloc.bar_time, color=w_col)
                 array.push(ict_lines, lWick)
                 
                 float top = math.max(c_data.o, c_data.c)
@@ -1864,7 +1866,7 @@ f_draw_ict_group(array<ict_candle> arr, string tf_str, int start_offset) =>
                 if top == btm
                     top := top + syminfo.mintick
                     
-                box bBody = box.new(left, top, right, btm, border_color=bord_col, bgcolor=b_col)
+                box bBody = box.new(left_time, top, right_time, btm, xloc=xloc.bar_time, border_color=bord_col, bgcolor=b_col)
                 array.push(ict_boxes, bBody)
                 
                 highest_p := na(highest_p) ? c_data.h : math.max(highest_p, c_data.h)
@@ -1872,8 +1874,10 @@ f_draw_ict_group(array<ict_candle> arr, string tf_str, int start_offset) =>
             
         if ict_show_lbl and not na(highest_p)
             int group_end = offset - ict_space_c
-            int group_center = math.round((group_start + group_end) / 2)
-            label lbl = label.new(group_center, highest_p, tf_str, color=color.new(color.white, 100), textcolor=color.gray, style=label.style_label_down, size=size.small)
+            int group_center_offset = math.round((group_start + group_end) / 2)
+            int group_center_time = time + (group_center_offset * time_diff)
+            
+            label lbl = label.new(group_center_time, highest_p, tf_str, xloc=xloc.bar_time, color=color.new(color.white, 100), textcolor=color.gray, style=label.style_label_down, size=size.small)
             array.push(ict_lbls, lbl)
             
         offset += ict_space_h
