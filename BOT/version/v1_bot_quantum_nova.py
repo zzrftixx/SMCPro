@@ -7,7 +7,7 @@ from datetime import datetime
 # ==========================================
 # 1. KONFIGURASI MASTER QUANTUM NOVA
 # ==========================================
-TARGET_SYMBOLS = ["BTCUSDm", "XAUUSDm"] # Wajib sesuai penulisan broker
+POSSIBLE_SYMBOLS = ["BTCUSDm", "XAUUSDm", "BTCUSDr", "XAUUSDr", "BTCUSD", "XAUUSD", "#BTCUSD", "#BTCUSDr", "XAUUSDb", "XAUUSDc", "BTCUSDc"] # Wajib sesuai penulisan broker
 LOT_SIZE = 0.01
 MAGIC_NUMBER = 999111
 DEVIATION = 20
