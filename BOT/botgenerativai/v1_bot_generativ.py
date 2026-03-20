@@ -15,7 +15,7 @@ DEVIATION = 20
 
 # KONFIGURASI GEMINI API (FUNDAMENTAL AI)
 # Masukkan API Key kamu di sini. Ingat, Gemini gratisan punya limit 15 Request Per Menit.
-GEMINI_API_KEY = "AIzaSyAcBguNa8C3E_fTro9xltlAwIDJbwFTAc0" 
+GEMINI_API_KEY = "" 
 genai.configure(api_key=GEMINI_API_KEY)
 ai_model = genai.GenerativeModel('gemini-pro')
 

@@ -21,7 +21,7 @@ END_HOUR = 23
 MAX_SPREAD_POINTS = 500 
 
 # KONEKSI GEMINI AI (FUNDAMENTAL VETO)
-GEMINI_API_KEY = "AIzaSyBeN2m9pdxR68BU4Uj3Vl-ce-0aapXB8B4" 
+GEMINI_API_KEY = "" 
 genai.configure(api_key=GEMINI_API_KEY)
 ai_model = genai.GenerativeModel('gemini-pro')
 

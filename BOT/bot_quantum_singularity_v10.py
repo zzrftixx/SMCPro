@@ -5,25 +5,49 @@ import time
 from datetime import datetime
 
 # ==========================================
-# 1. KONFIGURASI MASTER (V10 QUANTUM SINGULARITY)
+# 1. KONFIGURASI MASTER (V11 REGIME-ADAPTIVE)
 # ==========================================
-POSSIBLE_SYMBOLS = ["BTCUSDm", "XAUUSDm", "BTCUSDr", "XAUUSDr", "BTCUSD", "XAUUSD", "#BTCUSD", "XAUUSDc", "BTCUSDc"]
+POSSIBLE_SYMBOLS = ["XAUUSDc", "BTCUSDc", "BTCUSDm", "XAUUSDm", "BTCUSD", "XAUUSD"]
 TARGET_SYMBOLS = [] 
 
 RISK_PERCENT = 1.0 
-MAGIC_NUMBER = 101010
-DEVIATION = 5 # Ekstra ketat untuk Tick-Level Execution
+MAGIC_NUMBER = 111111
+DEVIATION = 10 
 
-START_HOUR = 8
+START_HOUR = 0
 END_HOUR = 23
 
-# INSTITUTIONAL CIRCUIT BREAKER
-MAX_DAILY_LOSS = 3 # Maksimal 3 kali SL per hari, lalu bot tidur sampai besok
-daily_loss_counter = {}
+# ==========================================
+# 2. DATA CACHE & STATE ENGINE (SPEED OPTIMIZATION)
+# ==========================================
+# Untuk menghindari request data berat setiap 1 detik
+data_cache = {}
+
+def get_cached_data(symbol, timeframe, num_bars, cache_key):
+    now = time.time()
+    # Cache duration: H1 = 1 menit, M15 = 30 detik, M1 = real-time
+    cache_ttl = 60 if timeframe == mt5.TIMEFRAME_H1 else 30 if timeframe == mt5.TIMEFRAME_M15 else 0
+    
+    if cache_key in data_cache:
+        last_update, df = data_cache[cache_key]
+        if now - last_update < cache_ttl:
+            return df
+
+    rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, num_bars)
+    if rates is None: return None
+    df = pd.DataFrame(rates)
+    
+    if cache_ttl > 0:
+        data_cache[cache_key] = (now, df)
+        
+    return df
 
 # ==========================================
-# 2. VOLUMETRIC SMC ENGINE (FLUXCHART LOGIC ADAPTATION)
+# 3. NATIVE MATH & SMC ENGINE
 # ==========================================
+def calc_ema(series, length):
+    return series.ewm(span=length, adjust=False).mean()
+
 def calc_atr(df, length=14):
     high_low = df['high'] - df['low']
     high_close = np.abs(df['high'] - df['close'].shift())
@@ -31,41 +55,55 @@ def calc_atr(df, length=14):
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     return tr.rolling(window=length).mean()
 
+def detect_regime(df_h1):
+    """
+    Market Regime Classifier (Trend vs Ranging)
+    Mencegah bot hancur di pasar yang sedang tidak berarah.
+    """
+    if df_h1 is None or len(df_h1) < 50: return "UNKNOWN"
+    
+    ema20 = calc_ema(df_h1['close'], 20).iloc[-1]
+    ema50 = calc_ema(df_h1['close'], 50).iloc[-1]
+    atr = calc_atr(df_h1, 14).iloc[-1]
+    
+    # Jika jarak EMA sempit, pasar sedang Choppy/Ranging
+    if abs(ema20 - ema50) < (atr * 0.3):
+        return "CHOPPY"
+    
+    if ema20 > ema50: return "TREND_BULL"
+    if ema20 < ema50: return "TREND_BEAR"
+    
+    return "UNKNOWN"
+
 def detect_volumetric_ob(df):
-    """
-    SMC Pro dengan Filter Volume Ekstrem.
-    Hanya menandai Order Block jika disertai anomali Tick Volume.
-    """
+    """SMC Pro - FIX BUG Mitigasi berdasarkan analisis Claude"""
     bull_ob, bear_ob = None, None
     atr = calc_atr(df, 14)
-    vol_sma = df['tick_volume'].rolling(window=20).mean() # Rata-rata volume
+    vol_sma = df['tick_volume'].rolling(window=20).mean() 
 
     for i in range(len(df)-2, 10, -1):
         body = abs(df['close'].iloc[i] - df['open'].iloc[i])
-        
-        # Syarat 1: Imbalance (Body besar)
-        # Syarat 2: Volume Anomali (Volume di atas rata-rata 20 candle terakhir)
         is_imbalance = body > (atr.iloc[i] * 2.0) 
         is_high_volume = df['tick_volume'].iloc[i] > (vol_sma.iloc[i] * 1.5)
 
         if is_imbalance and is_high_volume:
-            # Bullish Volumetric OB
             if df['close'].iloc[i] > df['open'].iloc[i] and bull_ob is None: 
                 for j in range(i-1, max(0, i-8), -1):
                     if df['close'].iloc[j] < df['open'].iloc[j]: 
                         top = max(df['open'].iloc[j], df['close'].iloc[j])
                         btm = df['low'].iloc[j]
-                        if df['low'].iloc[i:].min() > top: # Unmitigated
+                        # FIX BUG: Cek mulai dari i+1 agar tidak salah baca shadow sendiri
+                        if len(df) > i+1 and df['low'].iloc[i+1:].min() > top: 
                             bull_ob = {'top': top, 'bottom': btm}
                             break
 
-            # Bearish Volumetric OB
             if df['close'].iloc[i] < df['open'].iloc[i] and bear_ob is None: 
                 for j in range(i-1, max(0, i-8), -1):
                     if df['close'].iloc[j] > df['open'].iloc[j]: 
                         top = df['high'].iloc[j]
                         btm = min(df['open'].iloc[j], df['close'].iloc[j])
-                        if df['high'].iloc[i:].max() < btm: # Unmitigated
+                        # FIX BUG: Cek mulai dari i+1
+                        if len(df) > i+1 and df['high'].iloc[i+1:].max() < btm: 
                             bear_ob = {'top': top, 'bottom': btm}
                             break
                             
@@ -74,174 +112,119 @@ def detect_volumetric_ob(df):
     return bull_ob, bear_ob
 
 # ==========================================
-# 3. KONEKSI & DATA FEED
+# 4. KONEKSI & EKSEKUSI
 # ==========================================
 def init_broker():
     if not mt5.initialize(): return False
     return True
 
-def get_data(symbol, timeframe, num_bars=300):
-    rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, num_bars)
-    if rates is None: return None
-    df = pd.DataFrame(rates)
-    df['time'] = pd.to_datetime(df['time'], unit='s')
-    df.set_index('time', inplace=True)
-    return df
+def calculate_v11_logic(symbol, df_m1, df_m15, df_h1):
+    regime = detect_regime(df_h1)
+    
+    # FILTER 1: REGIME GATEKEEPER
+    if regime in ["CHOPPY", "UNKNOWN"]:
+        return {"status": "BLOCKED_BY_REGIME", "regime": regime}
 
-# ==========================================
-# 4. TICK-LEVEL SNIPER LOGIC
-# ==========================================
-def calculate_singularity_logic(symbol, df_m15):
-    if df_m15 is None: return None
-
-    # Deteksi Volumetric Order Block di M15
+    # FILTER 2: SMC ZONE
     bull_ob, bear_ob = detect_volumetric_ob(df_m15)
     
-    # Ambil harga detik ini (Tick Data) bukan candle close!
+    # FILTER 3: TICK TRIGGER
     tick = mt5.symbol_info_tick(symbol)
     if tick is None: return None
     
-    current_bid = tick.bid
-    current_ask = tick.ask
-    
     q_score, buy_sl, sell_sl = 50, 0, 0
-    atr_val = calc_atr(df_m15, 14).iloc[-1] / 3.0 # Penyesuaian ATR untuk SL
+    atr_val = calc_atr(df_m15, 14).iloc[-1] / 3.0
 
-    # TICK-LEVEL TRIGGER
-    if bull_ob:
-        # Jika Ask price masuk ke zona Bullish OB, tembak seketika!
-        if bull_ob['bottom'] <= current_ask <= bull_ob['top']: 
+    if bull_ob and regime == "TREND_BULL":
+        if bull_ob['bottom'] <= tick.ask <= bull_ob['top']: 
             q_score = 99
             buy_sl = bull_ob['bottom'] - atr_val 
 
-    if bear_ob:
-        # Jika Bid price masuk ke zona Bearish OB, tembak seketika!
-        if bear_ob['bottom'] <= current_bid <= bear_ob['top']: 
+    if bear_ob and regime == "TREND_BEAR":
+        if bear_ob['bottom'] <= tick.bid <= bear_ob['top']: 
             q_score = 1
             sell_sl = bear_ob['top'] + atr_val 
 
     return {
-        "score": q_score, "ask": current_ask, "bid": current_bid, 
+        "score": q_score, "ask": tick.ask, "bid": tick.bid, 
         "buy_sl": buy_sl, "sell_sl": sell_sl, "atr": atr_val,
-        "status": "ANALYZED"
+        "status": "VALID_SETUP", "regime": regime
     }
 
-def calculate_dynamic_lot(symbol, sl_price_distance, risk_percent):
-    account_info = mt5.account_info()
-    symbol_info = mt5.symbol_info(symbol)
-    if account_info is None or symbol_info is None: return 0.01
+def calculate_dynamic_lot(symbol, sl_distance, risk_percent):
+    info = mt5.account_info()
+    sym_info = mt5.symbol_info(symbol)
+    if info is None or sym_info is None: return 0.01
 
-    equity = account_info.equity
-    risk_money = equity * (risk_percent / 100.0) 
-    sl_ticks = sl_price_distance / symbol_info.trade_tick_size
-    if sl_ticks <= 0: return symbol_info.volume_min
-        
-    loss_per_lot = sl_ticks * symbol_info.trade_tick_value
-    if loss_per_lot <= 0: return symbol_info.volume_min
+    risk_money = info.equity * (risk_percent / 100.0) 
+    sl_ticks = sl_distance / sym_info.trade_tick_size
+    if sl_ticks <= 0: return sym_info.volume_min
+    
+    loss_per_lot = sl_ticks * sym_info.trade_tick_value
+    if loss_per_lot <= 0: return sym_info.volume_min
     return risk_money / loss_per_lot
 
-# ==========================================
-# 5. DEFENSE PROTOCOL (TRAIL & BREAKEVEN)
-# ==========================================
 def manage_defenses(symbol, current_atr):
     positions = mt5.positions_get(symbol=symbol, magic=MAGIC_NUMBER)
-    if positions is None or len(positions) == 0: return
+    if not positions: return
 
     for pos in positions:
-        entry_price = pos.price_open
-        current_sl = pos.sl
-        current_price = pos.price_current
-        trail_distance = current_atr * 1.5 
+        entry_price, current_sl, current_price = pos.price_open, pos.sl, pos.price_current
+        trail_dist = current_atr * 2.0 
         
         if pos.type == mt5.ORDER_TYPE_BUY:
-            if current_price >= entry_price + (entry_price - current_sl): 
-                if current_sl < entry_price: 
-                    mt5.order_send({"action": mt5.TRADE_ACTION_SLTP, "position": pos.ticket, "symbol": symbol, "sl": entry_price, "tp": pos.tp})
-            
-            if current_price - trail_distance > current_sl and current_price > entry_price:
-                new_sl = current_price - trail_distance
+            if current_price >= entry_price + ((entry_price - current_sl) * 1.5) and current_sl < entry_price: 
+                mt5.order_send({"action": mt5.TRADE_ACTION_SLTP, "position": pos.ticket, "symbol": symbol, "sl": entry_price, "tp": pos.tp})
+            if current_price - trail_dist > current_sl and current_price > entry_price:
+                new_sl = current_price - trail_dist
                 if new_sl > entry_price: 
                     mt5.order_send({"action": mt5.TRADE_ACTION_SLTP, "position": pos.ticket, "symbol": symbol, "sl": new_sl, "tp": pos.tp})
 
         elif pos.type == mt5.ORDER_TYPE_SELL:
-            if current_price <= entry_price - (current_sl - entry_price):
-                if current_sl > entry_price or current_sl == 0:
-                    mt5.order_send({"action": mt5.TRADE_ACTION_SLTP, "position": pos.ticket, "symbol": symbol, "sl": entry_price, "tp": pos.tp})
-            
-            if current_price + trail_distance < current_sl and current_price < entry_price:
-                new_sl = current_price + trail_distance
+            if current_price <= entry_price - ((current_sl - entry_price) * 1.5) and (current_sl > entry_price or current_sl == 0):
+                mt5.order_send({"action": mt5.TRADE_ACTION_SLTP, "position": pos.ticket, "symbol": symbol, "sl": entry_price, "tp": pos.tp})
+            if current_price + trail_dist < current_sl and current_price < entry_price:
+                new_sl = current_price + trail_dist
                 if new_sl < entry_price:
                     mt5.order_send({"action": mt5.TRADE_ACTION_SLTP, "position": pos.ticket, "symbol": symbol, "sl": new_sl, "tp": pos.tp})
 
-# ==========================================
-# 6. DIVISI EKSEKUSI & CIRCUIT BREAKER
-# ==========================================
-def execute_trade(symbol, decision_data):
-    # Cek Circuit Breaker harian
-    if daily_loss_counter.get(symbol, 0) >= MAX_DAILY_LOSS:
-        print(f"   🛑 CIRCUIT BREAKER AKTIF: {symbol} sudah rugi {MAX_DAILY_LOSS}x hari ini. Mesin dikunci sampai besok.")
-        return
+def execute_trade(symbol, decision):
+    score = decision['score']
+    if mt5.positions_get(symbol=symbol, magic=MAGIC_NUMBER): return
 
-    score = decision_data['score']
-    open_positions = mt5.positions_get(symbol=symbol, magic=MAGIC_NUMBER)
-    if open_positions is not None and len(open_positions) > 0: return
-
-    sl_distance = abs(decision_data['ask'] - decision_data['buy_sl']) if score >= 99 else abs(decision_data['bid'] - decision_data['sell_sl'])
-    total_dynamic_lot = calculate_dynamic_lot(symbol, sl_distance, RISK_PERCENT)
+    sl_dist = abs(decision['ask'] - decision['buy_sl']) if score >= 99 else abs(decision['bid'] - decision['sell_sl'])
+    total_lot = calculate_dynamic_lot(symbol, sl_dist, RISK_PERCENT)
     
-    symbol_info = mt5.symbol_info(symbol)
-    min_lot, step_lot = symbol_info.volume_min, symbol_info.volume_step
-    layer_lot = round((total_dynamic_lot / 3) / step_lot) * step_lot
+    sym_info = mt5.symbol_info(symbol)
+    min_lot, step = sym_info.volume_min, sym_info.volume_step
+    layer_lot = round((total_lot / 3) / step) * step
     num_layers = 3 if layer_lot >= min_lot else 1
     if layer_lot < min_lot: layer_lot = min_lot
 
-    sl_dist_raw = sl_distance
-    
     if score >= 99:
-        order_type, direction = mt5.ORDER_TYPE_BUY, "BUY"
-        price, sl = decision_data['ask'], decision_data['buy_sl']
-        tps = [price + (sl_dist_raw * 2.0), price + (sl_dist_raw * 3.0), price + (sl_dist_raw * 5.0)] 
+        order_type, direction, price, sl = mt5.ORDER_TYPE_BUY, "BUY", decision['ask'], decision['buy_sl']
+        tps = [price + (sl_dist * 2.0), price + (sl_dist * 3.0), price + (sl_dist * 5.0)] 
     elif score <= 1:
-        order_type, direction = mt5.ORDER_TYPE_SELL, "SELL"
-        price, sl = decision_data['bid'], decision_data['sell_sl']
-        tps = [price - (sl_dist_raw * 2.0), price - (sl_dist_raw * 3.0), price - (sl_dist_raw * 5.0)]
+        order_type, direction, price, sl = mt5.ORDER_TYPE_SELL, "SELL", decision['bid'], decision['sell_sl']
+        tps = [price - (sl_dist * 2.0), price - (sl_dist * 3.0), price - (sl_dist * 5.0)]
     else: return
 
-    print(f"\n   ⚡ QUANTUM SINGULARITY TRIGGER! EKSEKUSI {direction} TICK-LEVEL {symbol} ({num_layers} LAYER)")
+    print(f"\n   ⚡ V11 REGIME ALIGNED! EKSEKUSI {direction} {symbol} ({decision['regime']})")
     
     for i in range(num_layers):
         request = {
             "action": mt5.TRADE_ACTION_DEAL, "symbol": symbol, "volume": float(layer_lot),
             "type": order_type, "price": price, "sl": sl, "tp": tps[i],
             "deviation": DEVIATION, "magic": MAGIC_NUMBER,
-            "comment": f"V10_Sing_L{i+1}", "type_time": mt5.ORDER_TIME_GTC,
+            "comment": f"V11_L{i+1}", "type_time": mt5.ORDER_TIME_GTC, "type_filling": mt5.ORDER_FILLING_IOC
         }
-
-        for filling in [mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_RETURN]:
-            request["type_filling"] = filling
-            result = mt5.order_send(request)
-            if result.retcode == mt5.TRADE_RETCODE_DONE:
-                print(f"      ✅ LAYER {i+1} MASUK! Tiket: {result.order} | Target RR 1:{[2,3,5][i]}")
-                break
+        res = mt5.order_send(request)
+        if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+            print(f"      ✅ LAYER {i+1} MASUK! Tiket: {res.order}")
 
 # ==========================================
-# 7. SUPER-LOOP OPERASIONAL (ULTRA-SPEED)
+# 5. SUPER-LOOP (CACHED ULTRA-SPEED)
 # ==========================================
-def update_daily_loss(symbol):
-    """Mengecek history hari ini, apakah ada posisi yang ditutup kena SL (rugi)"""
-    today_start = datetime(datetime.now().year, datetime.now().month, datetime.now().day)
-    deals = mt5.history_deals_get(today_start, datetime.now(), group=f"*{symbol}*")
-    
-    loss_count = 0
-    if deals is not None:
-        for deal in deals:
-            if deal.magic == MAGIC_NUMBER and deal.profit < 0:
-                loss_count += 1
-    
-    # Karena kita pakai 3 layer, 1 setup = 3 deal. Kita bagi 3 agar dihitung 1 setup rugi.
-    actual_setups_lost = loss_count // 3
-    daily_loss_counter[symbol] = actual_setups_lost
-
 if __name__ == "__main__":
     if not init_broker(): quit()
     
@@ -250,7 +233,6 @@ if __name__ == "__main__":
         info = mt5.symbol_info(sym)
         if info is not None and info.visible:
             TARGET_SYMBOLS.append(sym)
-            daily_loss_counter[sym] = 0
             
     if not TARGET_SYMBOLS:
         print("❌ ERROR: Tidak ada pair yang valid.")
@@ -258,38 +240,42 @@ if __name__ == "__main__":
         quit()
         
     print(f"✅ Broker dikenali. Pair Aktif: {TARGET_SYMBOLS}")
-    print("\n🤖 TERMINAL QUANTUM V10 (THE SINGULARITY) LIVE.")
-    print("Mode: Volumetric Order Blocks + Tick-Level Execution + Circuit Breaker.\n")
+    print("\n🤖 TERMINAL QUANTUM V11 (REGIME-ADAPTIVE) LIVE.")
+    print("Membawa arsitektur caching, regime filter, dan OB Bug-fix.\n")
     
     try:
         while True:
             current_hour = datetime.now().hour
             
             for sym in TARGET_SYMBOLS:
-                rates = mt5.copy_rates_from_pos(sym, mt5.TIMEFRAME_M15, 0, 5)
-                if rates is not None:
-                    manage_defenses(sym, calc_atr(pd.DataFrame(rates), 14).iloc[-1])
-                # Update status rugi harian
-                update_daily_loss(sym)
+                df_m1 = get_cached_data(sym, mt5.TIMEFRAME_M1, 20, f"{sym}_m1_defense")
+                if df_m1 is not None:
+                    manage_defenses(sym, calc_atr(df_m1, 14).iloc[-1])
                 
             if current_hour < START_HOUR or current_hour > END_HOUR:
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] 💤 Di luar Killzone. Menolak berburu.")
                 time.sleep(60)
                 continue
                 
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚡ Memindai Volumetric OB (M15) dengan Trigger Tick Harga...")
-            
             for sym in TARGET_SYMBOLS:
-                df_m15 = get_data(sym, mt5.TIMEFRAME_M15, 300)
+                # Mengambil data menggunakan sistem Cache agar loop secepat kilat
+                df_m1 = get_cached_data(sym, mt5.TIMEFRAME_M1, 300, f"{sym}_m1")
+                df_m15 = get_cached_data(sym, mt5.TIMEFRAME_M15, 300, f"{sym}_m15")
+                df_h1 = get_cached_data(sym, mt5.TIMEFRAME_H1, 300, f"{sym}_h1")
                 
-                decision = calculate_singularity_logic(sym, df_m15)
-                if decision and decision.get("status") == "ANALYZED":
-                    if decision['score'] >= 99 or decision['score'] <= 1:
-                        execute_trade(sym, decision)
+                decision = calculate_v11_logic(sym, df_m1, df_m15, df_h1)
+                
+                if decision:
+                    if decision.get("status") == "BLOCKED_BY_REGIME":
+                        # Print hanya di detik ke-0 setiap menit agar terminal tidak berisik
+                        if int(time.time()) % 60 == 0: 
+                            print(f"   [{datetime.now().strftime('%H:%M:%S')}] {sym}: Pasar sedang {decision['regime']}. Tiarap.")
+                    elif decision.get("status") == "VALID_SETUP":
+                        if decision['score'] >= 99 or decision['score'] <= 1:
+                            execute_trade(sym, decision)
             
-            # Waktu istirahat HANYA 1 DETIK! Ultra-speed untuk menangkap jarum harga
-            time.sleep(1) 
+            # Istirahat 0.5 detik. Karena data berat di-cache, CPU tidak akan terbakar.
+            time.sleep(0.5) 
             
     except KeyboardInterrupt:
-        print("\n🛑 Sistem Quantum V10 dimatikan secara manual.")
+        print("\n🛑 Sistem Quantum V11 dimatikan.")
         mt5.shutdown()
