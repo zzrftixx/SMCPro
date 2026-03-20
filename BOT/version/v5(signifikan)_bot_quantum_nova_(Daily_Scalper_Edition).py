@@ -14,7 +14,7 @@ MAGIC_NUMBER = 999111
 DEVIATION = 20
 
 # Filter Sesi & Keamanan Broker
-START_HOUR = 10
+START_HOUR = 0
 END_HOUR = 23
 MAX_SPREAD_POINTS = 500 # Pastikan broker tidak sedang scamming
 
